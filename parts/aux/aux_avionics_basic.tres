@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ShipPart" format=3]
+
+[ext_resource type="Script" path="res://parts/ship_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Basic Avionics Suite"
+size_class = 3
+mass_kg = 25.0
+description = "Standard RC telemetry transceiver, flight computer, and battery pack."

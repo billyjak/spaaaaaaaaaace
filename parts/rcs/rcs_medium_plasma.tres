@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="RCSPart" format=3]
+
+[ext_resource type="Script" path="res://parts/rcs_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Arcjet Plasma RCS"
+size_class = 1
+mass_kg = 16.0
+description = "High-tier lightweight electrothermal plasma RCS nozzles. Lighter than starter hydrazine quads with ~1.8x torque and 4.6x efficiency (1,200 s Isp)."
+specific_impulse = 1200.0
+tech_thrust_multiplier = 2.1

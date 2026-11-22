@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="RCSPart" format=3]
+
+[ext_resource type="Script" path="res://parts/rcs_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Medium Hydrazine RCS"
+tech_tier = 1
+size_class = 1
+mass_kg = 20.0
+description = "Tier 1 starter 6-nozzle hydrazine maneuvering jets (260 s Isp)."
+specific_impulse = 260.0
+tech_thrust_multiplier = 1.0

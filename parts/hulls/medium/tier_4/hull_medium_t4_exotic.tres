@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="HullPart" format=3]
+
+[ext_resource type="Script" path="res://parts/hull_part.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://ckg1vnm730fyl" path="res://hull_medium.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Vector Exotic Lattice Frame"
+tech_tier = 4
+size_class = 1
+mass_kg = 50.4
+description = "Tier 4 exotic metamaterial hull. Ultralight structure with minimal rotational inertia."
+hull_scene = ExtResource("2_scene")
+fuel_capacity_kg = 250.0
+inertia_radius_m = 1.14
+rcs_lever_arm_m = 1.8

@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="ThrusterPart" format=3]
+
+[ext_resource type="Script" path="res://parts/thruster_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Large Fusion Torch"
+tech_tier = 3
+size_class = 2
+mass_kg = 106.4
+description = "Tier 3 magnetic-nozzle fusion torch drive (2,200 s Isp). High acceleration and endurance."
+specific_impulse = 2200.0
+tech_thrust_multiplier = 3.0

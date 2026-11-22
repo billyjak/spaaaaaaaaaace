@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="HullPart" format=3]
+
+[ext_resource type="Script" path="res://parts/hull_part.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://cxy8dp1cklx6u" path="res://hull_small.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Dart Exotic Lattice Frame"
+tech_tier = 4
+size_class = 0
+mass_kg = 34.44
+description = "Tier 4 exotic metamaterial hull. Ultralight structure with minimal rotational inertia."
+hull_scene = ExtResource("2_scene")
+fuel_capacity_kg = 100.0
+inertia_radius_m = 0.684
+rcs_lever_arm_m = 1.0

@@ -10,101 +10,98 @@ const MIN_TOTAL_MASS := 0.01
 const MIN_INERTIA := 0.01
 
 # ---------------------------------------------------------------------------
-# Ship Presets (Small / Medium / Large)
-# Each ShipData .tres defines its hull scene (sprite, exhaust, 6 RCS nozzles,
-# and HullCollision) alongside its SI part masses, inertia radius, and RCS.
+# Ship Loadout Presets (Small / Medium / Large)
+# Each ShipData .tres is a collection of ShipPart pointers (hull, thruster,
+# rcs, aux_parts). Swapping ships installs that loadout's parts onto the ship.
 # ---------------------------------------------------------------------------
 @export_group("Ship Presets")
 @export var ship_small: ShipData = preload("res://ship_small.tres")
 @export var ship_medium: ShipData = preload("res://ship_medium.tres")
 @export var ship_large: ShipData = preload("res://ship_large.tres")
-@export_enum("Small", "Medium", "Large") var starting_ship: int = 1
+@export_enum("Small", "Medium", "Large") var starting_ship: int = 0
+## Starting tech tier (1-4) for Hull, Engine, and RCS on launch.
+@export_range(1, 4) var starting_tier: int = 1
 
 # ---------------------------------------------------------------------------
-# Ship Part Masses (kg)
-# Modeled after a ~4m unmanned bipropellant racing drone (D-10.png at 0.35x
-# scale is ~39 px long -> 3.9 m at 10 px/m).
-# Dry mass = 200 kg, Fuel = 200 kg -> 50% propellant fraction (400 kg wet),
-# which is realistic for high-delta-v small orbital spacecraft and makes the
-# ship noticeably twice as quick to accelerate and turn as the tank empties.
+# Installed Parts (Drag-and-drop .tres parts from res://parts/ to test!)
+# If left empty before Play, _ready() equips `starting_ship`.
+# If you assign custom parts in the Inspector (or swap them live in Remote
+# Inspector), PlayerShip immediately recomputes mass, inertia, thrust, and I_sp.
 # ---------------------------------------------------------------------------
-@export_group("Ship Parts (Mass in kg)")
-## Main rocket engine mass (kg). ~35 kg is comparable to a Rocket Lab Rutherford engine.
-@export var thruster_mass: float = 35.0
-## Propellant mass (kg). Consumed while the main thruster fires; drops to 0.0 when empty.
-@export var fuel_mass: float = 200.0
-## Placeholder part 3 (kg) - e.g., hull / airframe / propellant tank structure.
-@export var ship_part_3_mass: float = 120.0
-## Placeholder part 4 (kg) - e.g., avionics, battery/power, and RCS hardware.
-@export var ship_part_4_mass: float = 45.0
-## Placeholder part 5 (kg) - free slot for future modules (weapons, shields, cargo).
-@export var ship_part_5_mass: float = 0.0
+@export_group("Installed Parts")
+@export var installed_hull: HullPart
+@export var installed_thruster: ThrusterPart
+@export var installed_rcs: RCSPart
+@export var installed_aux_parts: Array[ShipPart] = []
+## Shared propellant currently in the tank (kg), initialized from installed_hull.fuel_capacity_kg.
+@export var fuel_mass: float = 250.0
 
 # ---------------------------------------------------------------------------
-# Thruster & Fuel Consumption Physics (SI Units)
-# Square-cube scaling: engine mass scales with volume (L^3), while nozzle
-# throat cross-sectional area & thrust scale with area (L^2), giving:
-#   max_thrust = reference_thrust * (thruster_mass / reference_thruster_mass)^(2/3)
-#
-# Fuel flow rate is linear with applied thrust:
-#   mass_flow_rate (kg/s) = applied_thrust (N) / (specific_impulse * g0)
-# Because mass drops in real time as fuel burns, the exponential Tsiolkovsky
-# rocket equation emerges naturally from the physics engine.
+# Global Physics Baselines (SI Units)
+# Every ThrusterPart and RCSPart scales off these square-cube (L^2 / L^3)
+# reference baselines multiplied by each part's own tech_thrust_multiplier:
+#   F_main   = reference_thrust_newtons * (thruster.mass_kg / reference_thruster_mass)^(2/3) * tech_mult
+#   F_nozzle = reference_rcs_nozzle_thrust_n * (rcs.mass_kg / reference_rcs_mass)^(2/3) * tech_mult
+#   tau_rcs  = 2 * F_nozzle * hull.rcs_lever_arm_m
+#   F_lin    = 2 * F_nozzle
 # ---------------------------------------------------------------------------
-@export_group("Thruster & Fuel Physics (SI)")
-## Baseline engine mass (kg) corresponding to reference_thrust_newtons.
+@export_group("Global Propulsion Baselines (SI)")
+## Baseline NASA-era main engine mass (kg) corresponding to reference_thrust_newtons.
 @export var reference_thruster_mass: float = 35.0
-## Baseline thrust (N) at reference_thruster_mass. 25,000 N (25 kN) matches a
-## Rutherford-class engine: ~6.4 G (62.5 m/s^2) wet -> ~12.7 G (125 m/s^2) dry.
-@export var reference_thrust_newtons: float = 25000.0
-## Square-cube scaling exponent (2/3 = 0.6667 -> L^2 area / L^3 volume).
+## Baseline NASA-era main thrust (N) at reference_thruster_mass (9 kN -> ~2.0-4.6 G on Medium).
+@export var reference_thrust_newtons: float = 9000.0
+## Square-cube scaling exponent for main engines (2/3 -> L^2 nozzle area / L^3 engine mass).
 @export var thrust_mass_exponent: float = 2.0 / 3.0
-## Specific impulse I_sp (seconds). Real methalox / hypergolic vacuum engines
-## achieve ~280-330 s (310 s -> v_e = 3,040 m/s, burning ~8.2 kg/s at 25 kN,
-## ~24.3 s of continuous full burn or ~1 min of typical racing).
-@export var specific_impulse: float = 310.0
+## Baseline 6-nozzle RCS system mass (kg) corresponding to reference_rcs_nozzle_thrust_n.
+@export var reference_rcs_mass: float = 20.0
+## Baseline thrust per individual RCS nozzle (N) at reference_rcs_mass (1.5 kN starter jets).
+@export var reference_rcs_nozzle_thrust_n: float = 1500.0
+## Square-cube scaling exponent for RCS nozzles (2/3 -> L^2 area / L^3 volume).
+@export var rcs_mass_exponent: float = 2.0 / 3.0
+## World scale connecting SI meters to Godot 2D pixels (16 px/m -> 39 px Medium ship = ~2.4 m drone).
+@export var pixels_per_meter: float = 16.0
 
 # ---------------------------------------------------------------------------
-# Inertia & World Scale
+# Flight Computer & RCS Valve Timing
 # ---------------------------------------------------------------------------
-@export_group("Inertia & World Scale")
-## Uniform radius of gyration (m) applied to all parts for now (I = sum(m * r^2)).
-## On a ~3.9 m craft, 1.5 m yields 900 kg*m^2 wet -> 450 kg*m^2 dry.
-@export var inertia_radius_m: float = 1.5
-## World scale connecting SI meters to Godot 2D pixels.
-## At 10 px/m: 39 px ship = 3.9 m, ~370 px track = 37 m, 62.5 m/s^2 = 625 px/s^2.
-@export var pixels_per_meter: float = 10.0
-
-# ---------------------------------------------------------------------------
-# RCS Controls (Infinite Propellant for Now)
-# Note: Real orbital satellites turn slowly with ~10-100 N*m; an unmanned
-# high-G racing drone uses large bipropellant RCS quads (~45,000 N*m) to flip
-# 180 degrees in ~0.6 s wet (~0.4 s dry).
-# ---------------------------------------------------------------------------
-@export_group("RCS (Infinite for Now)")
-## Rotational RCS torque (N*m). Radians are dimensionless, so no px/m conversion needed.
-@export var rcs_torque: float = 45000.0
-## Omnidirectional linear RCS braking force (N). 6,000 N = 15 m/s^2 wet -> 30 m/s^2 dry.
-@export var rcs_linear_force: float = 6000.0
+@export_group("Flight Computer & RCS Visuals")
 ## Safety margin multiplier on angular stopping distance when stick-aiming.
-@export var brake_multiplier: float = 3.0
+@export var brake_multiplier: float = 1.5
+## Angular deadband (radians) around stick-aim target (~0.025 rad = ~1.4 deg) to prevent
+## microscopic analog stick jitter from constantly firing RCS and wasting propellant.
+@export var aim_deadband_rad: float = 0.025
 ## Minimum time (s) an RCS nozzle stays ON once fired (Space Shuttle PRCS min pulse = 0.08 s).
 @export var rcs_min_on_time: float = 0.08
 ## Minimum cooldown (s) after shutting OFF before an RCS nozzle can fire again (~6 Hz max cycle).
 @export var rcs_min_off_time: float = 0.08
-## Fraction of rcs_torque required to trigger a visual puff (filters analog stick micro-jitter).
+## Fraction of derived RCS torque required to trigger a visual puff (filters stick micro-jitter).
 @export var rcs_visual_torque_threshold: float = 0.05
 
 var rotational_stabilize := true
 
+const SIZE_KEYS: PackedStringArray = ["small", "medium", "large"]
+const HULL_TIER_SLUGS: PackedStringArray = ["steel", "titanium", "carbon", "exotic"]
+const ENGINE_TIER_SLUGS: PackedStringArray = ["chemical", "ntr", "fusion", "exotic"]
+const RCS_TIER_SLUGS: PackedStringArray = ["hydrazine", "resistojet", "plasma", "exotic"]
+
 var _active_ship_name: String = "Custom"
+var _active_size_index: int = 0
+var _hull_tier: int = 1
+var _engine_tier: int = 1
+var _rcs_tier: int = 1
+var _loaded_hull_scene: PackedScene = null
 var _initial_fuel_mass: float = 0.0
 var _dry_mass: float = 0.0
 var _current_max_thrust_n: float = 0.0
 var _current_applied_thrust_n: float = 0.0
 var _current_fuel_burn_rate: float = 0.0
+var _current_rcs_burn_rate: float = 0.0
+var _current_rcs_nozzle_thrust_n: float = 0.0
+var _current_rcs_torque: float = 0.0
+var _current_rcs_linear_force: float = 0.0
+var _size_warnings: PackedStringArray = PackedStringArray()
 
-var _active_hull: Node2D = null
+var _active_hull_node: Node2D = null
 var _active_collision: Node2D = null
 var _exhaust_sprite: Sprite2D = null
 var _exhaust_base_scale: Vector2 = Vector2.ONE
@@ -130,32 +127,178 @@ var _rcs_valve_state: Dictionary = {
 
 
 func _ready() -> void:
-	match starting_ship:
-		0:
-			equip_ship(ship_small)
-		1:
-			equip_ship(ship_medium)
-		2:
-			equip_ship(ship_large)
-		_:
-			equip_ship(ship_medium)
+	_active_size_index = clampi(starting_ship, 0, 2)
+	var init_tier := clampi(starting_tier, 1, 4)
+	_hull_tier = init_tier
+	_engine_tier = init_tier
+	_rcs_tier = init_tier
+
+	# If custom parts were already dragged onto PlayerShip in the Inspector, keep them;
+	# otherwise load the selected starting ship size and tech tier.
+	if installed_hull != null:
+		_active_ship_name = "Custom (%s)" % installed_hull.part_name
+		_sync_indices_from_installed_parts()
+		_initial_fuel_mass = maxf(installed_hull.fuel_capacity_kg, 0.0)
+		fuel_mass = _initial_fuel_mass
+		_rebuild_hull_visuals()
+		_refresh_all_stats()
+	else:
+		equip_size_and_tiers(_active_size_index, _hull_tier, _engine_tier, _rcs_tier)
+
+
+func _sync_indices_from_installed_parts() -> void:
+	if installed_hull != null:
+		_hull_tier = clampi(installed_hull.tech_tier, 1, 4)
+		match installed_hull.size_class:
+			ShipPart.SizeClass.SMALL:
+				_active_size_index = 0
+			ShipPart.SizeClass.MEDIUM:
+				_active_size_index = 1
+			ShipPart.SizeClass.LARGE:
+				_active_size_index = 2
+	if installed_thruster != null:
+		_engine_tier = clampi(installed_thruster.tech_tier, 1, 4)
+	if installed_rcs != null:
+		_rcs_tier = clampi(installed_rcs.tech_tier, 1, 4)
+
+
+func _load_hull_part(size_index: int, tier: int) -> HullPart:
+	var s_key := SIZE_KEYS[clampi(size_index, 0, 2)]
+	var t := clampi(tier, 1, 4)
+	var path := "res://parts/hulls/%s/tier_%d/hull_%s_t%d_%s.tres" % [s_key, t, s_key, t, HULL_TIER_SLUGS[t - 1]]
+	return load(path) as HullPart
+
+
+func _load_thruster_part(size_index: int, tier: int) -> ThrusterPart:
+	var s_key := SIZE_KEYS[clampi(size_index, 0, 2)]
+	var t := clampi(tier, 1, 4)
+	var path := "res://parts/thrusters/%s/tier_%d/thruster_%s_t%d_%s.tres" % [s_key, t, s_key, t, ENGINE_TIER_SLUGS[t - 1]]
+	return load(path) as ThrusterPart
+
+
+func _load_rcs_part(size_index: int, tier: int) -> RCSPart:
+	var s_key := SIZE_KEYS[clampi(size_index, 0, 2)]
+	var t := clampi(tier, 1, 4)
+	var path := "res://parts/rcs/%s/tier_%d/rcs_%s_t%d_%s.tres" % [s_key, t, s_key, t, RCS_TIER_SLUGS[t - 1]]
+	return load(path) as RCSPart
 
 
 func equip_ship(data: ShipData) -> void:
 	if data == null:
 		return
 
+	_active_ship_name = data.ship_name
+	installed_hull = data.hull
+	installed_thruster = data.thruster
+	installed_rcs = data.rcs
+	installed_aux_parts = data.aux_parts.duplicate()
+	_sync_indices_from_installed_parts()
+
+	_initial_fuel_mass = maxf(installed_hull.fuel_capacity_kg, 0.0) if installed_hull != null else 0.0
+	fuel_mass = _initial_fuel_mass
+
+	_rebuild_hull_visuals()
+	_refresh_all_stats()
+
+
+func equip_size_and_tier(size_index: int, tier: int) -> void:
+	var t := clampi(tier, 1, 4)
+	equip_size_and_tiers(size_index, t, t, t)
+
+
+func equip_size_and_tiers(size_index: int, hull_tier: int, engine_tier: int, rcs_tier: int) -> void:
+	_active_size_index = clampi(size_index, 0, 2)
+	_hull_tier = clampi(hull_tier, 1, 4)
+	_engine_tier = clampi(engine_tier, 1, 4)
+	_rcs_tier = clampi(rcs_tier, 1, 4)
+
+	var base_preset: ShipData = ship_small
+	match _active_size_index:
+		0:
+			base_preset = ship_small
+		1:
+			base_preset = ship_medium
+		2:
+			base_preset = ship_large
+
+	var hull_res := _load_hull_part(_active_size_index, _hull_tier)
+	var eng_res := _load_thruster_part(_active_size_index, _engine_tier)
+	var rcs_res := _load_rcs_part(_active_size_index, _rcs_tier)
+
+	_active_ship_name = base_preset.ship_name if base_preset != null else SIZE_KEYS[_active_size_index].capitalize()
+	installed_hull = hull_res if hull_res != null else (base_preset.hull if base_preset != null else null)
+	installed_thruster = eng_res if eng_res != null else (base_preset.thruster if base_preset != null else null)
+	installed_rcs = rcs_res if rcs_res != null else (base_preset.rcs if base_preset != null else null)
+	installed_aux_parts = base_preset.aux_parts.duplicate() if base_preset != null else []
+
+	_initial_fuel_mass = maxf(installed_hull.fuel_capacity_kg, 0.0) if installed_hull != null else 0.0
+	fuel_mass = _initial_fuel_mass
+
+	_rebuild_hull_visuals()
+	_refresh_all_stats()
+
+
+func cycle_ship_size() -> void:
+	var next_size := (_active_size_index + 1) % 3
+	equip_size_and_tiers(next_size, _hull_tier, _engine_tier, _rcs_tier)
+
+
+func cycle_hull_tier() -> void:
+	_hull_tier = (_hull_tier % 4) + 1
+	var next_hull := _load_hull_part(_active_size_index, _hull_tier)
+	if next_hull != null:
+		install_hull(next_hull, false)
+
+
+func cycle_engine_tier() -> void:
+	_engine_tier = (_engine_tier % 4) + 1
+	var next_eng := _load_thruster_part(_active_size_index, _engine_tier)
+	if next_eng != null:
+		install_thruster(next_eng)
+
+
+func cycle_rcs_tier() -> void:
+	_rcs_tier = (_rcs_tier % 4) + 1
+	var next_rcs := _load_rcs_part(_active_size_index, _rcs_tier)
+	if next_rcs != null:
+		install_rcs(next_rcs)
+
+
+func install_hull(part: HullPart, refill_fuel: bool = true) -> void:
+	installed_hull = part
+	if installed_hull != null:
+		_initial_fuel_mass = maxf(installed_hull.fuel_capacity_kg, 0.0)
+		if refill_fuel:
+			fuel_mass = _initial_fuel_mass
+		else:
+			fuel_mass = minf(fuel_mass, _initial_fuel_mass)
+	_rebuild_hull_visuals()
+	_refresh_all_stats()
+
+
+func install_thruster(part: ThrusterPart) -> void:
+	installed_thruster = part
+	_refresh_all_stats()
+
+
+func install_rcs(part: RCSPart) -> void:
+	installed_rcs = part
+	_refresh_all_stats()
+
+
+func _rebuild_hull_visuals() -> void:
 	# Immediately detach and free previous hull and reparented collision shape
 	if _active_collision != null:
 		remove_child(_active_collision)
 		_active_collision.queue_free()
 		_active_collision = null
 
-	if _active_hull != null:
-		remove_child(_active_hull)
-		_active_hull.queue_free()
-		_active_hull = null
+	if _active_hull_node != null:
+		remove_child(_active_hull_node)
+		_active_hull_node.queue_free()
+		_active_hull_node = null
 
+	_loaded_hull_scene = installed_hull.hull_scene if installed_hull != null else null
 	_exhaust_sprite = null
 	_exhaust_base_scale = Vector2.ONE
 	_rcs_bow_port = null
@@ -165,73 +308,110 @@ func equip_ship(data: ShipData) -> void:
 	_rcs_retro_port = null
 	_rcs_retro_starboard = null
 
-	# Apply ship preset stats onto instance variables (still editable in Remote Inspector)
-	_active_ship_name = data.ship_name
-	thruster_mass = data.thruster_mass
-	fuel_mass = data.fuel_mass
-	ship_part_3_mass = data.ship_part_3_mass
-	ship_part_4_mass = data.ship_part_4_mass
-	ship_part_5_mass = data.ship_part_5_mass
-	inertia_radius_m = data.inertia_radius_m
-	rcs_torque = data.rcs_torque
-	rcs_linear_force = data.rcs_linear_force
-	_initial_fuel_mass = maxf(fuel_mass, 0.0)
-
-	# Instantiate new hull scene and wire up visuals + collider
-	if data.hull_scene != null:
-		_active_hull = data.hull_scene.instantiate() as Node2D
-		add_child(_active_hull)
+	if _loaded_hull_scene != null:
+		_active_hull_node = _loaded_hull_scene.instantiate() as Node2D
+		add_child(_active_hull_node)
 
 		# Reparent HullCollision directly under RigidBody2D so Godot physics uses it
-		var hull_col: Node2D = _active_hull.get_node_or_null("HullCollision") as Node2D
+		var hull_col: Node2D = _active_hull_node.get_node_or_null("HullCollision") as Node2D
 		if hull_col == null:
-			for child in _active_hull.get_children():
+			for child in _active_hull_node.get_children():
 				if child is CollisionShape2D or child is CollisionPolygon2D:
 					hull_col = child
 					break
 		if hull_col != null:
 			var col_transform := hull_col.transform
-			_active_hull.remove_child(hull_col)
+			_active_hull_node.remove_child(hull_col)
 			hull_col.owner = null
 			add_child(hull_col)
 			hull_col.transform = col_transform
 			_active_collision = hull_col
 
-		_exhaust_sprite = _active_hull.get_node_or_null("ExhaustSprite") as Sprite2D
+		_exhaust_sprite = _active_hull_node.get_node_or_null("ExhaustSprite") as Sprite2D
 		if _exhaust_sprite != null:
 			_exhaust_base_scale = _exhaust_sprite.scale
 
-		_rcs_bow_port = _active_hull.get_node_or_null("BowPort") as Node2D
-		_rcs_bow_starboard = _active_hull.get_node_or_null("BowStarboard") as Node2D
-		_rcs_stern_port = _active_hull.get_node_or_null("SternPort") as Node2D
-		_rcs_stern_starboard = _active_hull.get_node_or_null("SternStarboard") as Node2D
-		_rcs_retro_port = _active_hull.get_node_or_null("RetroPort") as Node2D
-		_rcs_retro_starboard = _active_hull.get_node_or_null("RetroStarboard") as Node2D
+		_rcs_bow_port = _active_hull_node.get_node_or_null("BowPort") as Node2D
+		_rcs_bow_starboard = _active_hull_node.get_node_or_null("BowStarboard") as Node2D
+		_rcs_stern_port = _active_hull_node.get_node_or_null("SternPort") as Node2D
+		_rcs_stern_starboard = _active_hull_node.get_node_or_null("SternStarboard") as Node2D
+		_rcs_retro_port = _active_hull_node.get_node_or_null("RetroPort") as Node2D
+		_rcs_retro_starboard = _active_hull_node.get_node_or_null("RetroStarboard") as Node2D
 
 	for key in _rcs_valve_state.keys():
 		_rcs_valve_state[key]["on"] = false
 		_rcs_valve_state[key]["timer"] = 0.0
 
-	_recalculate_mass_and_inertia()
-	_current_max_thrust_n = _calculate_max_thrust_newtons()
-	_current_applied_thrust_n = 0.0
-	_current_fuel_burn_rate = 0.0
 	_update_exhaust_visual(0.0)
 	_update_rcs_visuals(0.0, Vector2.ZERO, 0.0)
+
+
+func _refresh_all_stats() -> void:
+	_validate_installed_part_sizes()
+	_recalculate_mass_and_inertia()
+	_recalculate_propulsion()
+	_current_applied_thrust_n = 0.0
+	_current_fuel_burn_rate = 0.0
+	_current_rcs_burn_rate = 0.0
 	_update_telemetry()
 
 
-# Returns every part's mass and radial distance from the center of mass.
-# Currently all parts share `inertia_radius_m`, making it easy to swap in
+func _validate_installed_part_sizes() -> void:
+	_size_warnings.clear()
+	if installed_hull == null:
+		return
+	var hull_size := installed_hull.size_class
+	var hull_label := ShipPart.size_class_name(hull_size)
+
+	if installed_thruster != null and not installed_thruster.fits_hull_size(hull_size):
+		_size_warnings.append(
+			"Engine %s (%s) > %s hull"
+			% [installed_thruster.part_name, ShipPart.size_class_name(installed_thruster.size_class), hull_label]
+		)
+	if installed_rcs != null and not installed_rcs.fits_hull_size(hull_size):
+		_size_warnings.append(
+			"RCS %s (%s) > %s hull"
+			% [installed_rcs.part_name, ShipPart.size_class_name(installed_rcs.size_class), hull_label]
+		)
+	for aux in installed_aux_parts:
+		if aux != null and not aux.fits_hull_size(hull_size):
+			_size_warnings.append(
+				"Aux %s (%s) > %s hull"
+				% [aux.part_name, ShipPart.size_class_name(aux.size_class), hull_label]
+			)
+
+	for warning in _size_warnings:
+		push_warning("SPAAAAAAAAAACE part size mismatch: %s" % warning)
+
+
+func _get_inertia_radius_m() -> float:
+	return maxf(installed_hull.inertia_radius_m, 0.01) if installed_hull != null else 1.5
+
+
+func _get_rcs_lever_arm_m() -> float:
+	return maxf(installed_hull.rcs_lever_arm_m, 0.0) if installed_hull != null else 1.8
+
+
+# Returns every installed part's mass and radial distance from the center of mass.
+# Currently all parts share the hull's inertia_radius_m, making it easy to swap in
 # per-part positions or pixel-based CoM calculations later.
 func _get_ship_parts() -> Array[Dictionary]:
-	return [
-		{"name": "thruster", "mass": maxf(thruster_mass, 0.0), "radius_m": inertia_radius_m},
-		{"name": "fuel", "mass": maxf(fuel_mass, 0.0), "radius_m": inertia_radius_m},
-		{"name": "ship_part_3", "mass": maxf(ship_part_3_mass, 0.0), "radius_m": inertia_radius_m},
-		{"name": "ship_part_4", "mass": maxf(ship_part_4_mass, 0.0), "radius_m": inertia_radius_m},
-		{"name": "ship_part_5", "mass": maxf(ship_part_5_mass, 0.0), "radius_m": inertia_radius_m},
-	]
+	var r := _get_inertia_radius_m()
+	var parts: Array[Dictionary] = []
+
+	if installed_hull != null:
+		parts.append({"name": "hull", "mass": maxf(installed_hull.mass_kg, 0.0), "radius_m": r})
+	if installed_thruster != null:
+		parts.append({"name": "thruster", "mass": maxf(installed_thruster.mass_kg, 0.0), "radius_m": r})
+	if installed_rcs != null:
+		parts.append({"name": "rcs", "mass": maxf(installed_rcs.mass_kg, 0.0), "radius_m": r})
+	for i in installed_aux_parts.size():
+		var aux := installed_aux_parts[i]
+		if aux != null:
+			parts.append({"name": "aux_%d" % i, "mass": maxf(aux.mass_kg, 0.0), "radius_m": r})
+
+	parts.append({"name": "fuel", "mass": maxf(fuel_mass, 0.0), "radius_m": r})
+	return parts
 
 
 func _recalculate_mass_and_inertia() -> void:
@@ -253,20 +433,45 @@ func _recalculate_mass_and_inertia() -> void:
 	inertia = maxf(total_inertia, MIN_INERTIA)
 
 
-func _calculate_max_thrust_newtons() -> float:
-	if thruster_mass <= 0.0 or reference_thruster_mass <= 0.0 or reference_thrust_newtons <= 0.0:
-		return 0.0
-	var mass_ratio := thruster_mass / reference_thruster_mass
-	return reference_thrust_newtons * pow(mass_ratio, thrust_mass_exponent)
+func _recalculate_propulsion() -> void:
+	if installed_thruster != null:
+		_current_max_thrust_n = installed_thruster.get_max_thrust_newtons(
+			reference_thruster_mass, reference_thrust_newtons, thrust_mass_exponent
+		)
+	else:
+		_current_max_thrust_n = 0.0
+
+	if installed_rcs != null:
+		_current_rcs_nozzle_thrust_n = installed_rcs.get_nozzle_thrust_newtons(
+			reference_rcs_mass, reference_rcs_nozzle_thrust_n, rcs_mass_exponent
+		)
+	else:
+		_current_rcs_nozzle_thrust_n = 0.0
+
+	# Symmetric RCS pairs equidistant (hull.rcs_lever_arm_m) from center of mass:
+	# - Rotation uses 2 opposing nozzles -> tau = 2 * F_nozzle * L
+	# - Linear braking uses 2 aligned nozzles -> F_linear = 2 * F_nozzle
+	var lever_arm := _get_rcs_lever_arm_m()
+	_current_rcs_torque = 2.0 * _current_rcs_nozzle_thrust_n * lever_arm
+	_current_rcs_linear_force = 2.0 * _current_rcs_nozzle_thrust_n
 
 
 func _physics_process(delta: float) -> void:
-	if Input.is_action_just_pressed("swap_ship_small"):
-		equip_ship(ship_small)
-	elif Input.is_action_just_pressed("swap_ship_medium"):
-		equip_ship(ship_medium)
-	elif Input.is_action_just_pressed("swap_ship_large"):
-		equip_ship(ship_large)
+	if InputMap.has_action("cycle_ship_size") and Input.is_action_just_pressed("cycle_ship_size"):
+		cycle_ship_size()
+	if InputMap.has_action("cycle_hull") and Input.is_action_just_pressed("cycle_hull"):
+		cycle_hull_tier()
+	if InputMap.has_action("cycle_engine") and Input.is_action_just_pressed("cycle_engine"):
+		cycle_engine_tier()
+	if InputMap.has_action("cycle_rcs") and Input.is_action_just_pressed("cycle_rcs"):
+		cycle_rcs_tier()
+
+	if InputMap.has_action("swap_ship_small") and Input.is_action_just_pressed("swap_ship_small"):
+		equip_size_and_tiers(0, _hull_tier, _engine_tier, _rcs_tier)
+	elif InputMap.has_action("swap_ship_medium") and Input.is_action_just_pressed("swap_ship_medium"):
+		equip_size_and_tiers(1, _hull_tier, _engine_tier, _rcs_tier)
+	elif InputMap.has_action("swap_ship_large") and Input.is_action_just_pressed("swap_ship_large"):
+		equip_size_and_tiers(2, _hull_tier, _engine_tier, _rcs_tier)
 
 	if Input.is_action_just_pressed("reset_fuel"):
 		fuel_mass = _initial_fuel_mass
@@ -274,19 +479,25 @@ func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("toggle_rotational_stabilization"):
 		rotational_stabilize = not rotational_stabilize
 
+	# Support live drag-and-drop HullPart replacement in Remote Inspector
+	var desired_scene: PackedScene = installed_hull.hull_scene if installed_hull != null else null
+	if desired_scene != _loaded_hull_scene:
+		_rebuild_hull_visuals()
+
 	_recalculate_mass_and_inertia()
-	_current_max_thrust_n = _calculate_max_thrust_newtons()
+	_recalculate_propulsion()
 
 	var main_throttle := 0.0
-	var applied_rcs_torque := 0.0
-	var applied_rcs_linear_dir_world := Vector2.ZERO
+	var desired_rcs_torque := 0.0
+	var desired_rcs_linear_n := 0.0
+	var desired_rcs_linear_dir_world := Vector2.ZERO
 
 	# Player boost (main thruster)
 	var trigger := Input.get_action_strength("boost")
 	if trigger > 0.05:
 		main_throttle = maxf(main_throttle, trigger)
 
-	# Stick aim (infinite RCS for now)
+	# Stick aim (draws from shared fuel_mass)
 	var stick := Vector2(
 		Input.get_axis("look_left", "look_right"),
 		Input.get_axis("look_up", "look_down")
@@ -294,81 +505,105 @@ func _physics_process(delta: float) -> void:
 	var aiming: bool = stick.length() > 0.2
 
 	if aiming:
-		var target_rot: float = stick.angle() + PI * 0.5
-		var error: float = wrapf(target_rot - rotation, -PI, PI)
-		var abs_error: float = abs(error)
-		var abs_vel: float = abs(angular_velocity)
+		if fuel_mass > 0.0 and _current_rcs_torque > 0.0:
+			var target_rot: float = stick.angle() + PI * 0.5
+			var error: float = wrapf(target_rot - rotation, -PI, PI)
+			var abs_error: float = abs(error)
+			var abs_vel: float = abs(angular_velocity)
 
-		# Close enough — kill spin and stop cleanly
-		if abs_error < 0.005 and abs_vel < 0.05:
-			angular_velocity = 0.0
-		elif inertia > 0.0 and delta > 0.0:
-			# Time-optimal phase-plane speed profile with fractional final-tick pulse
-			# so RCS never overshoots past the target into a 2-frame limit cycle.
-			var alpha: float = rcs_torque / inertia
-			var alpha_brake: float = alpha / maxf(brake_multiplier, 1.0)
-			var desired_speed: float = minf(sqrt(2.0 * alpha_brake * abs_error), abs_error / delta)
-			var desired_vel: float = signf(error) * desired_speed
-			var required_torque: float = (desired_vel - angular_velocity) * inertia / delta
-			applied_rcs_torque = clampf(required_torque, -rcs_torque, rcs_torque)
-			apply_torque(applied_rcs_torque)
+			# Inside angular deadband — stop residual spin without chasing stick micro-jitter
+			if abs_error < aim_deadband_rad:
+				if abs_vel < 0.08:
+					angular_velocity = 0.0
+				elif inertia > 0.0 and delta > 0.0:
+					var stop_torque: float = -angular_velocity * inertia / delta
+					desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
+			elif inertia > 0.0 and delta > 0.0:
+				# Time-optimal phase-plane speed profile with PWM fractional final-tick pulse
+				# so RCS never overshoots past the target into a 2-frame limit cycle.
+				var alpha: float = _current_rcs_torque / inertia
+				var alpha_brake: float = alpha / maxf(brake_multiplier, 1.0)
+				var desired_speed: float = minf(sqrt(2.0 * alpha_brake * abs_error), abs_error / delta)
+				var desired_vel: float = signf(error) * desired_speed
+				var required_torque: float = (desired_vel - angular_velocity) * inertia / delta
+				desired_rcs_torque = clampf(required_torque, -_current_rcs_torque, _current_rcs_torque)
 
-	# Rotational stabilize only when not aiming (infinite RCS for now)
+	# Rotational stabilize only when not aiming (draws from shared fuel_mass)
 	elif rotational_stabilize:
-		if abs(angular_velocity) > 0.001 and delta > 0.0:
-			# Fire full RCS torque when spinning fast, or a fractional pulse on the
-			# final tick to land directly on 0.0 rad/s without overshooting.
-			var stop_torque: float = -angular_velocity * inertia / delta
-			applied_rcs_torque = clampf(stop_torque, -rcs_torque, rcs_torque)
-			apply_torque(applied_rcs_torque)
-		else:
-			angular_velocity = 0.0
+		if fuel_mass > 0.0 and _current_rcs_torque > 0.0:
+			if abs(angular_velocity) > 0.001 and delta > 0.0:
+				# Fire full RCS torque when spinning fast, or a PWM fractional pulse on the
+				# final tick to land directly on 0.0 rad/s without overshooting.
+				var stop_torque: float = -angular_velocity * inertia / delta
+				desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
+			else:
+				angular_velocity = 0.0
 
-	# Momentum stabilize (uses main engine when nose is aligned opposite velocity
-	# and fuel remains; otherwise falls back to infinite omnidirectional RCS)
+	# Momentum stabilize (uses main engine when nose is aligned opposite velocity;
+	# otherwise falls back to symmetric linear RCS — both draw from shared fuel_mass)
 	if Input.is_action_pressed("stabilize_momentum"):
 		var speed: float = linear_velocity.length()
-		if speed > 0.5 and delta > 0.0:
+		if speed > 0.5 and delta > 0.0 and fuel_mass > 0.0:
 			var vel_dir: Vector2 = linear_velocity.normalized()
 			var forward: Vector2 = Vector2.UP.rotated(rotation)
 			var alignment: float = forward.dot(-vel_dir)
-			if alignment > 0.1 and fuel_mass > 0.0 and _current_max_thrust_n > 0.0:
+			if alignment > 0.1 and _current_max_thrust_n > 0.0:
 				main_throttle = maxf(main_throttle, clampf(alignment, 0.0, 1.0))
-			else:
+			elif _current_rcs_linear_force > 0.0:
 				var speed_m_s: float = speed / maxf(pixels_per_meter, 0.001)
 				var force_to_stop_n: float = speed_m_s * mass / delta
-				var applied_rcs_n: float = minf(rcs_linear_force, force_to_stop_n)
-				if applied_rcs_n > 0.0:
-					applied_rcs_linear_dir_world = -vel_dir
-					apply_central_force(applied_rcs_linear_dir_world * applied_rcs_n * pixels_per_meter)
-		else:
+				desired_rcs_linear_n = minf(_current_rcs_linear_force, force_to_stop_n)
+				if desired_rcs_linear_n > 0.0:
+					desired_rcs_linear_dir_world = -vel_dir
+		elif fuel_mass > 0.0:
 			linear_velocity = Vector2.ZERO
 
-	# Apply main thruster force and consume fuel linearly with applied thrust
+	# Compute combined propellant draw from shared fuel_mass for both main engine & RCS
+	var applied_rcs_torque := 0.0
+	var applied_rcs_linear_dir_world := Vector2.ZERO
 	_current_applied_thrust_n = 0.0
 	_current_fuel_burn_rate = 0.0
+	_current_rcs_burn_rate = 0.0
 	var active_throttle := 0.0
 
-	if main_throttle > 0.0 and fuel_mass > 0.0 and _current_max_thrust_n > 0.0:
-		var clamped_throttle := clampf(main_throttle, 0.0, 1.0)
-		var desired_thrust_n := _current_max_thrust_n * clamped_throttle
-		var exhaust_velocity := maxf(specific_impulse * STANDARD_GRAVITY, 0.01)
-		var burn_rate := desired_thrust_n / exhaust_velocity # kg/s
-		var fuel_needed := burn_rate * delta
+	var clamped_throttle := clampf(main_throttle, 0.0, 1.0)
+	var desired_main_thrust_n := (_current_max_thrust_n * clamped_throttle) if (clamped_throttle > 0.0 and _current_max_thrust_n > 0.0) else 0.0
+	var lever_arm := _get_rcs_lever_arm_m()
+	var rotational_rcs_thrust_n := (absf(desired_rcs_torque) / lever_arm) if lever_arm > 0.0 else 0.0
+	var total_desired_rcs_thrust_n := rotational_rcs_thrust_n + desired_rcs_linear_n
 
+	var main_isp := installed_thruster.specific_impulse if installed_thruster != null else 310.0
+	var rcs_isp := installed_rcs.specific_impulse if installed_rcs != null else 260.0
+	var main_exhaust_v := maxf(main_isp * STANDARD_GRAVITY, 0.01)
+	var rcs_exhaust_v := maxf(rcs_isp * STANDARD_GRAVITY, 0.01)
+
+	var desired_main_burn_rate := desired_main_thrust_n / main_exhaust_v
+	var desired_rcs_burn_rate := total_desired_rcs_thrust_n / rcs_exhaust_v
+	var total_fuel_needed := (desired_main_burn_rate + desired_rcs_burn_rate) * delta
+
+	if total_fuel_needed > 0.0 and fuel_mass > 0.0 and delta > 0.0:
 		var burn_fraction := 1.0
-		if fuel_needed > fuel_mass:
-			burn_fraction = fuel_mass / fuel_needed
+		if total_fuel_needed > fuel_mass:
+			burn_fraction = fuel_mass / total_fuel_needed
 			fuel_mass = 0.0
 		else:
-			fuel_mass -= fuel_needed
+			fuel_mass -= total_fuel_needed
 
-		_current_applied_thrust_n = desired_thrust_n * burn_fraction
-		_current_fuel_burn_rate = burn_rate * burn_fraction
-		active_throttle = clamped_throttle * burn_fraction
+		if desired_rcs_burn_rate > 0.0:
+			_current_rcs_burn_rate = desired_rcs_burn_rate * burn_fraction
+			if absf(desired_rcs_torque) > 0.0:
+				applied_rcs_torque = desired_rcs_torque * burn_fraction
+				apply_torque(applied_rcs_torque)
+			if desired_rcs_linear_n > 0.0:
+				applied_rcs_linear_dir_world = desired_rcs_linear_dir_world
+				apply_central_force(applied_rcs_linear_dir_world * (desired_rcs_linear_n * burn_fraction) * pixels_per_meter)
 
-		var forward := Vector2.UP.rotated(rotation)
-		apply_central_force(forward * _current_applied_thrust_n * pixels_per_meter)
+		if desired_main_burn_rate > 0.0:
+			_current_applied_thrust_n = desired_main_thrust_n * burn_fraction
+			_current_fuel_burn_rate = desired_main_burn_rate * burn_fraction
+			active_throttle = clamped_throttle * burn_fraction
+			var forward := Vector2.UP.rotated(rotation)
+			apply_central_force(forward * _current_applied_thrust_n * pixels_per_meter)
 
 		# Immediately reflect burned fuel in mass & inertia for this frame's telemetry
 		_recalculate_mass_and_inertia()
@@ -413,9 +648,9 @@ func _step_rcs_valve(nozzle_key: String, desired_on: bool, delta: float) -> bool
 # RCS thrusters are strictly boolean (on/off, never scaled) with minimum valve
 # pulse & cooldown durations so they never strobe at the 60 Hz physics tick rate.
 func _update_rcs_visuals(torque_applied: float, linear_dir_world: Vector2, delta: float) -> void:
-	var torque_threshold := rcs_torque * maxf(rcs_visual_torque_threshold, 0.0)
-	var spin_cw := torque_applied > torque_threshold
-	var spin_ccw := torque_applied < -torque_threshold
+	var torque_threshold := _current_rcs_torque * maxf(rcs_visual_torque_threshold, 0.0)
+	var spin_cw := _current_rcs_torque > 0.0 and torque_applied > torque_threshold
+	var spin_ccw := _current_rcs_torque > 0.0 and torque_applied < -torque_threshold
 
 	var push_starboard := false
 	var push_port := false
@@ -457,21 +692,46 @@ func _update_telemetry() -> void:
 	var fuel_pct := (fuel_mass / _initial_fuel_mass * 100.0) if _initial_fuel_mass > 0.0 else 0.0
 	var max_accel_m_s2 := _current_max_thrust_n / mass
 	var max_accel_g := max_accel_m_s2 / STANDARD_GRAVITY
-	var max_turn_accel := rcs_torque / inertia if inertia > 0.0 else 0.0
+	var max_turn_accel := _current_rcs_torque / inertia if inertia > 0.0 else 0.0
 	var active_accel_m_s2 := _current_applied_thrust_n / mass
 	var active_accel_g := active_accel_m_s2 / STANDARD_GRAVITY
 	var speed_m_s := linear_velocity.length() / maxf(pixels_per_meter, 0.001)
 
+	var hull_label := (
+		"[T%d] %s" % [installed_hull.tech_tier, installed_hull.part_name]
+		if installed_hull != null
+		else "None"
+	)
+	var eng_label := (
+		"[T%d] %s (%.0fs)" % [installed_thruster.tech_tier, installed_thruster.part_name, installed_thruster.specific_impulse]
+		if installed_thruster != null
+		else "None"
+	)
+	var rcs_label := (
+		"[T%d] %s (%.0fs)" % [installed_rcs.tech_tier, installed_rcs.part_name, installed_rcs.specific_impulse]
+		if installed_rcs != null
+		else "None"
+	)
+	var warning_line := ""
+	if not _size_warnings.is_empty():
+		warning_line = "\n[!] SIZE MISMATCH: %s" % ", ".join(_size_warnings)
+
 	_telemetry_label.text = (
 		"SHIP: %s\n"
+		+ "HULL: %s\n"
+		+ "ENG: %s | RCS: %s\n"
 		+ "FUEL: %.1f / %.1f kg (%.0f%%)\n"
 		+ "MASS: %.1f kg (Dry: %.1f kg)\n"
 		+ "INERTIA: %.1f kg·m² | TURN: %.1f rad/s²\n"
+		+ "RCS: %.2f kN/noz × %.1fm = %.1f kN·m\n"
 		+ "MAX THRUST: %.2f kN (%.2f G max)\n"
-		+ "BURN: %.2f kg/s | ACCEL: %.2f G (%.1f m/s²)\n"
-		+ "SPEED: %.1f m/s"
+		+ "BURN: %.2f main / %.2f rcs kg/s | ACCEL: %.2f G\n"
+		+ "SPEED: %.1f m/s%s"
 	) % [
 		_active_ship_name,
+		hull_label,
+		eng_label,
+		rcs_label,
 		fuel_mass,
 		_initial_fuel_mass,
 		fuel_pct,
@@ -479,10 +739,14 @@ func _update_telemetry() -> void:
 		_dry_mass,
 		inertia,
 		max_turn_accel,
+		_current_rcs_nozzle_thrust_n / 1000.0,
+		_get_rcs_lever_arm_m(),
+		_current_rcs_torque / 1000.0,
 		_current_max_thrust_n / 1000.0,
 		max_accel_g,
 		_current_fuel_burn_rate,
+		_current_rcs_burn_rate,
 		active_accel_g,
-		active_accel_m_s2,
 		speed_m_s,
+		warning_line,
 	]

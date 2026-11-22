@@ -1,17 +1,16 @@
-[gd_resource type="Resource" script_class="ShipData" format=3]
+[gd_resource type="Resource" script_class="ShipData" format=3 uid="uid://bhslkdrh04vkj"]
 
-[ext_resource type="Script" path="res://ship_data.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://bdp0gcacj30gj" path="res://hull_large.tscn" id="2_hull"]
+[ext_resource type="Script" uid="uid://wnblhiocmhjf" path="res://parts/ship_part.gd" id="1_cm8nv"]
+[ext_resource type="Script" uid="uid://b18hi0tncmngd" path="res://ship_data.gd" id="1_script"]
+[ext_resource type="Resource" path="res://parts/hulls/large/tier_1/hull_large_t1_steel.tres" id="2_hull"]
+[ext_resource type="Resource" path="res://parts/thrusters/large/tier_1/thruster_large_t1_chemical.tres" id="3_thruster"]
+[ext_resource type="Resource" path="res://parts/rcs/large/tier_1/rcs_large_t1_hydrazine.tres" id="4_rcs"]
+[ext_resource type="Resource" path="res://parts/aux/aux_avionics_basic.tres" id="5_aux"]
 
 [resource]
 script = ExtResource("1_script")
 ship_name = "Titan (Large)"
-hull_scene = ExtResource("2_hull")
-thruster_mass = 140.0
-fuel_mass = 425.0
-ship_part_3_mass = 180.0
-ship_part_4_mass = 55.0
-ship_part_5_mass = 0.0
-inertia_radius_m = 2.4
-rcs_torque = 75000.0
-rcs_linear_force = 7500.0
+hull = ExtResource("2_hull")
+thruster = ExtResource("3_thruster")
+rcs = ExtResource("4_rcs")
+aux_parts = Array[ExtResource("1_cm8nv")]([ExtResource("5_aux")])

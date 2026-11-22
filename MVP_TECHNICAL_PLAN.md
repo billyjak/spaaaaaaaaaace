@@ -3,27 +3,46 @@
 ## 0. Current Progress & Next Session Queue
 
 ### Completed So Far
-* **SI Component Mass, Inertia & Dynamic Fuel Physics (`player_ship.gd`):**
-  * Total `mass` computed from editable `@export` parts (`thruster_mass`, `fuel_mass`, `ship_part_3_mass`, `ship_part_4_mass`, `ship_part_5_mass`) via `_get_ship_parts()`.
-  * Uniform `inertia_radius_m` (`I = Σ m · r²`), updating dynamically every tick as `fuel_mass` burns.
-  * Square-cube thruster scaling (`max_thrust = ref_thrust * (thruster_mass / ref_mass)^(2/3)`), linear fuel consumption (`kg/s = F / (I_sp * 9.80665)`), and `reset_fuel` input support.
-  * Live top-left telemetry HUD (`TelemetryLayer`) showing Fuel, Mass, Inertia, Max Thrust/G, Burn Rate, Accel, and Speed.
-* **RCS Pulse-Clamping Bugfix (`player_ship.gd`):**
-  * Fixed the 2-frame bang-bang overshoot ghost-spin bug by clamping final-tick stopping torque/force to exact zero-crossing pulses.
-* **Instanced Boolean RCS Thrusters (`rcs_thruster.tscn`, `level.tscn`, `player_ship.gd`):**
-  * 6 reusable `RCSThruster` instances (`BowPort`, `BowStarboard`, `SternPort`, `SternStarboard`, `RetroPort`, `RetroStarboard`) wired to strict boolean on/off visibility based on rotational and linear RCS firing.
+* **Modular Part Resource System (`parts/ship_part.gd`, `hull_part.gd`, `thruster_part.gd`, `rcs_part.gd`, `ship_data.gd`):**
+  * Ships are now composed of swappable `Resource` pointers (`HullPart`, `ThrusterPart`, `RCSPart`, `aux_parts`) with `SizeClass` compatibility (`SMALL`, `MEDIUM`, `LARGE`, `UNIVERSAL`).
+  * Starter NASA-era chemical loadouts (`ship_small/medium/large.tres`) + high-tech test parts (`hull_medium_carbon.tres`, `thruster_medium_ntr.tres`, `thruster_medium_fusion.tres`, `rcs_medium_plasma.tres`) ready for instant drag-and-drop testing in the Godot Inspector.
+* **SI Component Mass, Inertia & Unified Fuel Physics (`player_ship.gd`):**
+  * Total `mass` and uniform `inertia` (`I = Σ m · r²`) derived dynamically from installed `ShipPart` masses + shared `fuel_mass` tank (updating live every physics tick as propellant burns).
+  * Square-cube scaling (`2/3` exponent × part `tech_thrust_multiplier`) for **both** main thrusters and symmetric RCS nozzles (equidistant at `hull.rcs_lever_arm_m`).
+  * Shared propellant tank (`fuel_mass`) feeding both main engine (`thruster.specific_impulse`) and RCS nozzles (`rcs.specific_impulse`), refilled via `reset_fuel`.
+  * Live top-left telemetry HUD (`TelemetryLayer`) showing Ship Name, Installed Parts & `I_sp`, Fuel, Mass, Inertia, Turn Rate, Derived RCS Torque, Max Thrust/G, Burn Rates, Accel, and Speed.
+* **RCS Pulse-Clamping, Valve Timing & Deadband (`player_ship.gd`):**
+  * Fixed the 2-frame bang-bang overshoot ghost-spin bug using PWM final-tick pulse clamping.
+  * Added per-nozzle minimum valve on/off timers (`0.08 s` / `0.08 s`) for crisp boolean RCS plumes and a `0.025 rad` (`1.4°`) stick-aim deadband to stop analog stick noise from wasting fuel.
+* **3 Swappable Ship Hulls (`hull_small/medium/large.tscn`):**
+  * Visually fitted `HullCollision` reparented onto `PlayerShip`, per-hull exhaust base scaling, and live hot-swapping (`swap_ship_small`, `swap_ship_medium`, `swap_ship_large`).
 
-### Logged Thoughts & Next Implementation Step (Pick Up Here Next!)
-1. **Fix 60 Hz RCS Valve Flickering:**
-   * *Problem:* Right now RCS sprites toggle on/off every single physics tick (`60 Hz`), which makes them strobe/flicker unrealistically—real RCS solenoid valves cannot cycle 60 times a second.
-   * *Planned Fix:* Add an editable minimum pulse duration / hold timer (e.g., `rcs_min_pulse_time` ≈ `0.05–0.08 s`) and/or deadband hysteresis so RCS bursts look crisp and physically plausible instead of strobing at 60 Hz.
-2. **Implement 3 Distinct Ships (Acceleration vs. Turn Rate Trade-Off):**
-   * *Architecture (Single `PlayerShip` + External Data):* Keep **one** `PlayerShip` node (with its `Camera2D`, `TelemetryLayer`, and `player_ship.gd` intact—no duplicating scenes/cameras). Selecting a ship simply loads a ship profile onto `PlayerShip` (updating part masses, `inertia_radius_m`, sprite texture/scale, collision size, and nozzle offsets).
-   * *Storage Format (`ships.json` vs. Godot `.tres` Resource):* JSON (`res://ships.json`) is totally valid, universal, and easy to edit in `nvim` via Godot's built-in `JSON.parse_string()` (Godot's native alternative is a custom `Resource` `.tres` file, which adds Inspector sliders & drag-and-drop textures; either works cleanly).
-   * *3 Ship Profiles (Driven by Real Mass, Square-Cube Thruster & Fuel Math):*
-     * **Light / Agile Ship:** Smallest `thruster_mass` + `fuel_mass` → lowest total mass & inertia → **highest RCS turn rate**, lowest straight-line acceleration.
-     * **Balanced Ship:** Medium `thruster_mass` + `fuel_mass` (around current `35 kg` thruster / `200 kg` fuel baseline).
-     * **Heavy / High-Accel Ship:** Larger `thruster_mass` + proportionally larger `fuel_mass` → **highest straight-line acceleration**, **lowest RCS turn rate** due to higher total mass & inertia.
+### Post-MVP Stretch Goals (Generational Space-Racing Roguelite)
+* **Generational Family Bloodline & Career Circuit:**
+  * Each run is a career across increasingly difficult, higher-payout racing leagues in a futuristic spectator sport; when a run ends, the next run continues as a **descendant in the same family line** carrying forward legacy unlocks/heirlooms.
+* **Part Manufacturers, Economy & Garage / Shop UI:**
+  * Prize money, manufacturer catalogs with distinct design philosophies (e.g., ultra-light composite makers, high-`I_sp` nuclear/fusion engine houses, high-torque RCS specialists), roguelite shop drafts between races, and an in-game Garage UI respecting `SizeClass` compatibility.
+* **Core Tech-Tier Progression Rule:**
+  * Moving up in tech tier (e.g., 1960s Chemical → Nuclear Thermal → MPD Plasma → Fusion Torch; Steel → Carbon-Composite; Hydrazine RCS → Plasma RCS) should improve **acceleration, fuel staying time, AND turn rate together** (achieved via lighter advanced materials + higher thrust density + higher `I_sp`), reserving heavy trade-off parts for specialized optional variants or weapons/defenses.
+* **Advanced Propulsion & Attitude Control Parts:**
+  * Full tech-tree progression across all 3 ship classes: 1960s Chemical (`310 s`) → Nuclear Thermal (`~900 s`) → Magnetoplasmadynamic / MPD Plasma (`~1,800 s`) → Fusion Torch / Epstein-style Drives (`2,500+ s`).
+  * **Electric Reaction Wheels / Control Moment Gyroscopes (CMGs)** (zero-fuel rotation with saturation limits) and weight-shedding hulls/tanks.
+* **Weapons, Countermeasures & Combat Triangle (All Built on `ShipPart` Weight Math):**
+  * Unmanned RC drone fleets (e.g., 4 drone stocks per race with respawn penalties), with hull hardpoint limits (`weapon_slots` / `defense_slots` on `HullPart`) giving Large hulls the firepower advantage.
+  * **Weapons (`WeaponPart extends ShipPart`, plus higher-tech tiers of each):**
+    * **Kinetic Repeaters:** Rapid projectile weapons; carry ammo mass (shedding weight as fired) and impart real Newtonian recoil impulses.
+    * **Lasers:** Hitscan/beam energy weapons; no ammo mass, but generate heavy thermal load requiring heat dissipation.
+    * **Missiles:** Guided ordnance; heavy payload mass that drops off the ship on launch.
+  * **Countermeasures & Defenses (`DefensePart extends ShipPart`, plus higher-tech tiers of each):**
+    * **Kinetic Shielding:** Counters Kinetic Repeaters at the cost of shield generator mass.
+    * **Heat Dissipation Systems (Radiators / Heat Sinks):** Counters enemy Lasers *and* manages heat from your own high-output lasers/drives at the cost of radiator mass.
+    * **Chaff Pods:** Counters Missiles by breaking guidance locks; sheds minor mass as charges are deployed.
+  * **Optional Strategy & Physics Depth:** Mid-race Pit/Refuel lanes, and per-part physical Center-of-Mass / pixel-based rotational inertia (`I = Σ m_i · r_i²`).
+* **Dynamic Speed-Based Camera Zoom:**
+  * Smoothly lerp `Camera2D.zoom` out as speed increases (zoomed in close when slow, wider view of upcoming corners at high speed).
+
+### Next MVP Steps
+* **Playable Racing Loop:** Controls (KBM Mouse-Aim + Manual RCS + Decoupled hold), Procedural Track + Translucent Track Ribbon + Checkpoints, Auto-Populated Parallax Asteroids/Stations, Main Menu & 3-Lap Time Trial Persistence.
 
 ---
 

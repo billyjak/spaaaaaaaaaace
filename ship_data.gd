@@ -3,17 +3,36 @@ extends Resource
 
 ## Display name shown in the Telemetry HUD and future Ship Select menu.
 @export var ship_name: String = "Unnamed Ship"
-## Hull visual + collider scene (must contain ShipSprite, ExhaustSprite, HullCollision, and 6 RCS nozzles).
-@export var hull_scene: PackedScene
 
-@export_group("Ship Parts (Mass in kg)")
-@export var thruster_mass: float = 35.0
-@export var fuel_mass: float = 200.0
-@export var ship_part_3_mass: float = 120.0
-@export var ship_part_4_mass: float = 45.0
-@export var ship_part_5_mass: float = 0.0
+@export_group("Installed Parts")
+@export var hull: HullPart
+@export var thruster: ThrusterPart
+@export var rcs: RCSPart
+@export var aux_parts: Array[ShipPart] = []
 
-@export_group("Inertia & RCS")
-@export var inertia_radius_m: float = 1.5
-@export var rcs_torque: float = 45000.0
-@export var rcs_linear_force: float = 6000.0
+
+## Returns human-readable warnings if any installed part doesn't match the hull's size class.
+func get_size_warnings() -> PackedStringArray:
+	var warnings := PackedStringArray()
+	if hull == null:
+		return warnings
+	var hull_size := hull.size_class
+	var hull_size_label := ShipPart.size_class_name(hull_size)
+
+	if thruster != null and not thruster.fits_hull_size(hull_size):
+		warnings.append(
+			"%s (%s) does not fit %s hull"
+			% [thruster.part_name, ShipPart.size_class_name(thruster.size_class), hull_size_label]
+		)
+	if rcs != null and not rcs.fits_hull_size(hull_size):
+		warnings.append(
+			"%s (%s) does not fit %s hull"
+			% [rcs.part_name, ShipPart.size_class_name(rcs.size_class), hull_size_label]
+		)
+	for aux in aux_parts:
+		if aux != null and not aux.fits_hull_size(hull_size):
+			warnings.append(
+				"%s (%s) does not fit %s hull"
+				% [aux.part_name, ShipPart.size_class_name(aux.size_class), hull_size_label]
+			)
+	return warnings

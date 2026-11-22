@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="ThrusterPart" format=3]
+
+[ext_resource type="Script" path="res://parts/thruster_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Large Exotic Drive"
+tech_tier = 4
+size_class = 2
+mass_kg = 91.0
+description = "Tier 4 exotic high-energy torch drive (5,500 s Isp). Extreme thrust density and staying time."
+specific_impulse = 5500.0
+tech_thrust_multiplier = 5.0

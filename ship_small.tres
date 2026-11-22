@@ -1,17 +1,16 @@
-[gd_resource type="Resource" script_class="ShipData" format=3]
+[gd_resource type="Resource" script_class="ShipData" format=3 uid="uid://cqwwj5unstdxg"]
 
-[ext_resource type="Script" path="res://ship_data.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://cxy8dp1cklx6u" path="res://hull_small.tscn" id="2_hull"]
+[ext_resource type="Script" uid="uid://wnblhiocmhjf" path="res://parts/ship_part.gd" id="1_6totq"]
+[ext_resource type="Script" uid="uid://b18hi0tncmngd" path="res://ship_data.gd" id="1_script"]
+[ext_resource type="Resource" path="res://parts/hulls/small/tier_1/hull_small_t1_steel.tres" id="2_hull"]
+[ext_resource type="Resource" path="res://parts/thrusters/small/tier_1/thruster_small_t1_chemical.tres" id="3_thruster"]
+[ext_resource type="Resource" path="res://parts/rcs/small/tier_1/rcs_small_t1_hydrazine.tres" id="4_rcs"]
+[ext_resource type="Resource" path="res://parts/aux/aux_avionics_basic.tres" id="5_aux"]
 
 [resource]
 script = ExtResource("1_script")
 ship_name = "Dart (Small)"
-hull_scene = ExtResource("2_hull")
-thruster_mass = 8.0
-fuel_mass = 75.0
-ship_part_3_mass = 82.0
-ship_part_4_mass = 35.0
-ship_part_5_mass = 0.0
-inertia_radius_m = 0.9
-rcs_torque = 24000.0
-rcs_linear_force = 5000.0
+hull = ExtResource("2_hull")
+thruster = ExtResource("3_thruster")
+rcs = ExtResource("4_rcs")
+aux_parts = Array[ExtResource("1_6totq")]([ExtResource("5_aux")])

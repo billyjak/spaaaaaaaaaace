@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="ThrusterPart" format=3]
+
+[ext_resource type="Script" path="res://parts/thruster_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Large NTR Drive"
+tech_tier = 2
+size_class = 2
+mass_kg = 123.2
+description = "Tier 2 compact nuclear thermal rocket (850 s Isp). Higher thrust and ~2.7x exhaust velocity."
+specific_impulse = 850.0
+tech_thrust_multiplier = 1.75

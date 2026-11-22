@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="ThrusterPart" format=3]
+
+[ext_resource type="Script" path="res://parts/thruster_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "NERVA-X Nuclear Thermal"
+size_class = 1
+mass_kg = 30.0
+description = "Mid-tier compact composite nuclear thermal rocket. Lighter than starter steel chemical hardware, ~3x fuel efficiency (900 s Isp), and stronger thrust."
+specific_impulse = 900.0
+tech_thrust_multiplier = 2.0

@@ -1,17 +1,16 @@
-[gd_resource type="Resource" script_class="ShipData" format=3]
+[gd_resource type="Resource" script_class="ShipData" format=3 uid="uid://ybrbnodo4weq"]
 
-[ext_resource type="Script" path="res://ship_data.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://ckg1vnm730fyl" path="res://hull_medium.tscn" id="2_hull"]
+[ext_resource type="Script" uid="uid://b18hi0tncmngd" path="res://ship_data.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://wnblhiocmhjf" path="res://parts/ship_part.gd" id="1_ueg7b"]
+[ext_resource type="Resource" path="res://parts/hulls/medium/tier_1/hull_medium_t1_steel.tres" id="2_hull"]
+[ext_resource type="Resource" path="res://parts/thrusters/medium/tier_1/thruster_medium_t1_chemical.tres" id="3_thruster"]
+[ext_resource type="Resource" path="res://parts/rcs/medium/tier_1/rcs_medium_t1_hydrazine.tres" id="4_rcs"]
+[ext_resource type="Resource" path="res://parts/aux/aux_avionics_basic.tres" id="5_aux"]
 
 [resource]
 script = ExtResource("1_script")
 ship_name = "Vector (Medium)"
-hull_scene = ExtResource("2_hull")
-thruster_mass = 35.0
-fuel_mass = 200.0
-ship_part_3_mass = 120.0
-ship_part_4_mass = 45.0
-ship_part_5_mass = 0.0
-inertia_radius_m = 1.5
-rcs_torque = 45000.0
-rcs_linear_force = 6000.0
+hull = ExtResource("2_hull")
+thruster = ExtResource("3_thruster")
+rcs = ExtResource("4_rcs")
+aux_parts = Array[ExtResource("1_ueg7b")]([ExtResource("5_aux")])

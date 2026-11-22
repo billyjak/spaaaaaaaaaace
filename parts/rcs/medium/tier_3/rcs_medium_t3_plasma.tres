@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="RCSPart" format=3]
+
+[ext_resource type="Script" path="res://parts/rcs_part.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+part_name = "Medium Plasma RCS"
+tech_tier = 3
+size_class = 1
+mass_kg = 16.0
+description = "Tier 3 electrothermal arcjet plasma RCS (1,400 s Isp). Crisp high-torque attitude control."
+specific_impulse = 1400.0
+tech_thrust_multiplier = 2.1

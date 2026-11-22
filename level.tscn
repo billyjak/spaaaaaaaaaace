@@ -38,6 +38,7 @@ continuous_cd = 1
 script = ExtResource("1_u52ul")
 
 [node name="Camera2D" type="Camera2D" parent="PlayerShip" unique_id=18992082]
+zoom = Vector2(1.5, 1.5)
 
 [node name="CanvasLayer" type="CanvasLayer" parent="PlayerShip/Camera2D" unique_id=535811549]
 layer = -1
