@@ -1,0 +1,48 @@
+[gd_scene format=3 uid="uid://bdp0gcacj30gj"]
+
+[ext_resource type="Texture2D" uid="uid://bjw3nehr0bmid" path="res://resources/SpaceShipsPack-AntuZ/SpaceShips/A-01.png" id="1_15hvq"]
+[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="2_iuktl"]
+[ext_resource type="PackedScene" uid="uid://cw4l15bsacdbo" path="res://rcs_thruster_large.tscn" id="3_0fxla"]
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_15hvq"]
+
+[node name="HullLarge" type="Node2D" unique_id=1960337208]
+
+[node name="ShipSprite" type="Sprite2D" parent="." unique_id=1539961127]
+position = Vector2(0, -6)
+rotation = 3.1415927
+scale = Vector2(0.165, 0.165)
+texture = ExtResource("1_15hvq")
+
+[node name="ExhaustSprite" type="Sprite2D" parent="." unique_id=851353585]
+position = Vector2(2.8421682e-14, 55.999996)
+rotation = 3.1415927
+scale = Vector2(1.575, 1.575)
+texture = ExtResource("2_iuktl")
+
+[node name="RetroPort" parent="." unique_id=1471376218 instance=ExtResource("3_0fxla")]
+position = Vector2(-9, -33)
+
+[node name="RetroStarboard" parent="." unique_id=648112997 instance=ExtResource("3_0fxla")]
+position = Vector2(8, -33)
+
+[node name="BowPort" parent="." unique_id=418428889 instance=ExtResource("3_0fxla")]
+position = Vector2(-19.000002, -28.000002)
+rotation = -1.5707964
+
+[node name="BowStarboard" parent="." unique_id=793357846 instance=ExtResource("3_0fxla")]
+position = Vector2(19, -28.000002)
+rotation = 1.5707964
+
+[node name="SternPort" parent="." unique_id=2051055100 instance=ExtResource("3_0fxla")]
+position = Vector2(-18.000002, 15)
+rotation = -1.5707964
+
+[node name="SternStarboard" parent="." unique_id=282917230 instance=ExtResource("3_0fxla")]
+position = Vector2(18.000002, 15)
+rotation = 1.5707964
+
+[node name="HullCollision" type="CollisionShape2D" parent="." unique_id=82918059]
+position = Vector2(0, -5.71)
+scale = Vector2(2.29, 2.29)
+shape = SubResource("CapsuleShape2D_15hvq")

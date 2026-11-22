@@ -10,6 +10,17 @@ const MIN_TOTAL_MASS := 0.01
 const MIN_INERTIA := 0.01
 
 # ---------------------------------------------------------------------------
+# Ship Presets (Small / Medium / Large)
+# Each ShipData .tres defines its hull scene (sprite, exhaust, 6 RCS nozzles,
+# and HullCollision) alongside its SI part masses, inertia radius, and RCS.
+# ---------------------------------------------------------------------------
+@export_group("Ship Presets")
+@export var ship_small: ShipData = preload("res://ship_small.tres")
+@export var ship_medium: ShipData = preload("res://ship_medium.tres")
+@export var ship_large: ShipData = preload("res://ship_large.tres")
+@export_enum("Small", "Medium", "Large") var starting_ship: int = 1
+
+# ---------------------------------------------------------------------------
 # Ship Part Masses (kg)
 # Modeled after a ~4m unmanned bipropellant racing drone (D-10.png at 0.35x
 # scale is ~39 px long -> 3.9 m at 10 px/m).
@@ -77,32 +88,136 @@ const MIN_INERTIA := 0.01
 @export var rcs_linear_force: float = 6000.0
 ## Safety margin multiplier on angular stopping distance when stick-aiming.
 @export var brake_multiplier: float = 3.0
+## Minimum time (s) an RCS nozzle stays ON once fired (Space Shuttle PRCS min pulse = 0.08 s).
+@export var rcs_min_on_time: float = 0.08
+## Minimum cooldown (s) after shutting OFF before an RCS nozzle can fire again (~6 Hz max cycle).
+@export var rcs_min_off_time: float = 0.08
+## Fraction of rcs_torque required to trigger a visual puff (filters analog stick micro-jitter).
+@export var rcs_visual_torque_threshold: float = 0.05
 
 var rotational_stabilize := true
 
+var _active_ship_name: String = "Custom"
 var _initial_fuel_mass: float = 0.0
 var _dry_mass: float = 0.0
 var _current_max_thrust_n: float = 0.0
 var _current_applied_thrust_n: float = 0.0
 var _current_fuel_burn_rate: float = 0.0
 
-@onready var _exhaust_sprite: Sprite2D = get_node_or_null("ExhaustSprite")
-@onready var _telemetry_label: Label = get_node_or_null("TelemetryLayer/TelemetryPanel/TelemetryLabel")
+var _active_hull: Node2D = null
+var _active_collision: Node2D = null
+var _exhaust_sprite: Sprite2D = null
+var _exhaust_base_scale: Vector2 = Vector2.ONE
 
-@onready var _rcs_bow_port: Node2D = get_node_or_null("BowPort")
-@onready var _rcs_bow_starboard: Node2D = get_node_or_null("BowStarboard")
-@onready var _rcs_stern_port: Node2D = get_node_or_null("SternPort")
-@onready var _rcs_stern_starboard: Node2D = get_node_or_null("SternStarboard")
-@onready var _rcs_retro_port: Node2D = get_node_or_null("RetroPort")
-@onready var _rcs_retro_starboard: Node2D = get_node_or_null("RetroStarboard")
+var _rcs_bow_port: Node2D = null
+var _rcs_bow_starboard: Node2D = null
+var _rcs_stern_port: Node2D = null
+var _rcs_stern_starboard: Node2D = null
+var _rcs_retro_port: Node2D = null
+var _rcs_retro_starboard: Node2D = null
+
+# Per-nozzle valve state: { "on": bool, "timer": float }
+var _rcs_valve_state: Dictionary = {
+	"bow_port": {"on": false, "timer": 0.0},
+	"bow_starboard": {"on": false, "timer": 0.0},
+	"stern_port": {"on": false, "timer": 0.0},
+	"stern_starboard": {"on": false, "timer": 0.0},
+	"retro_port": {"on": false, "timer": 0.0},
+	"retro_starboard": {"on": false, "timer": 0.0},
+}
+
+@onready var _telemetry_label: Label = get_node_or_null("TelemetryLayer/TelemetryPanel/TelemetryLabel")
 
 
 func _ready() -> void:
+	match starting_ship:
+		0:
+			equip_ship(ship_small)
+		1:
+			equip_ship(ship_medium)
+		2:
+			equip_ship(ship_large)
+		_:
+			equip_ship(ship_medium)
+
+
+func equip_ship(data: ShipData) -> void:
+	if data == null:
+		return
+
+	# Immediately detach and free previous hull and reparented collision shape
+	if _active_collision != null:
+		remove_child(_active_collision)
+		_active_collision.queue_free()
+		_active_collision = null
+
+	if _active_hull != null:
+		remove_child(_active_hull)
+		_active_hull.queue_free()
+		_active_hull = null
+
+	_exhaust_sprite = null
+	_exhaust_base_scale = Vector2.ONE
+	_rcs_bow_port = null
+	_rcs_bow_starboard = null
+	_rcs_stern_port = null
+	_rcs_stern_starboard = null
+	_rcs_retro_port = null
+	_rcs_retro_starboard = null
+
+	# Apply ship preset stats onto instance variables (still editable in Remote Inspector)
+	_active_ship_name = data.ship_name
+	thruster_mass = data.thruster_mass
+	fuel_mass = data.fuel_mass
+	ship_part_3_mass = data.ship_part_3_mass
+	ship_part_4_mass = data.ship_part_4_mass
+	ship_part_5_mass = data.ship_part_5_mass
+	inertia_radius_m = data.inertia_radius_m
+	rcs_torque = data.rcs_torque
+	rcs_linear_force = data.rcs_linear_force
 	_initial_fuel_mass = maxf(fuel_mass, 0.0)
+
+	# Instantiate new hull scene and wire up visuals + collider
+	if data.hull_scene != null:
+		_active_hull = data.hull_scene.instantiate() as Node2D
+		add_child(_active_hull)
+
+		# Reparent HullCollision directly under RigidBody2D so Godot physics uses it
+		var hull_col: Node2D = _active_hull.get_node_or_null("HullCollision") as Node2D
+		if hull_col == null:
+			for child in _active_hull.get_children():
+				if child is CollisionShape2D or child is CollisionPolygon2D:
+					hull_col = child
+					break
+		if hull_col != null:
+			var col_transform := hull_col.transform
+			_active_hull.remove_child(hull_col)
+			hull_col.owner = null
+			add_child(hull_col)
+			hull_col.transform = col_transform
+			_active_collision = hull_col
+
+		_exhaust_sprite = _active_hull.get_node_or_null("ExhaustSprite") as Sprite2D
+		if _exhaust_sprite != null:
+			_exhaust_base_scale = _exhaust_sprite.scale
+
+		_rcs_bow_port = _active_hull.get_node_or_null("BowPort") as Node2D
+		_rcs_bow_starboard = _active_hull.get_node_or_null("BowStarboard") as Node2D
+		_rcs_stern_port = _active_hull.get_node_or_null("SternPort") as Node2D
+		_rcs_stern_starboard = _active_hull.get_node_or_null("SternStarboard") as Node2D
+		_rcs_retro_port = _active_hull.get_node_or_null("RetroPort") as Node2D
+		_rcs_retro_starboard = _active_hull.get_node_or_null("RetroStarboard") as Node2D
+
+	for key in _rcs_valve_state.keys():
+		_rcs_valve_state[key]["on"] = false
+		_rcs_valve_state[key]["timer"] = 0.0
+
 	_recalculate_mass_and_inertia()
 	_current_max_thrust_n = _calculate_max_thrust_newtons()
+	_current_applied_thrust_n = 0.0
+	_current_fuel_burn_rate = 0.0
 	_update_exhaust_visual(0.0)
-	_update_rcs_visuals(0.0, Vector2.ZERO)
+	_update_rcs_visuals(0.0, Vector2.ZERO, 0.0)
 	_update_telemetry()
 
 
@@ -146,6 +261,13 @@ func _calculate_max_thrust_newtons() -> float:
 
 
 func _physics_process(delta: float) -> void:
+	if Input.is_action_just_pressed("swap_ship_small"):
+		equip_ship(ship_small)
+	elif Input.is_action_just_pressed("swap_ship_medium"):
+		equip_ship(ship_medium)
+	elif Input.is_action_just_pressed("swap_ship_large"):
+		equip_ship(ship_large)
+
 	if Input.is_action_just_pressed("reset_fuel"):
 		fuel_mass = _initial_fuel_mass
 
@@ -252,7 +374,7 @@ func _physics_process(delta: float) -> void:
 		_recalculate_mass_and_inertia()
 
 	_update_exhaust_visual(active_throttle)
-	_update_rcs_visuals(applied_rcs_torque, applied_rcs_linear_dir_world)
+	_update_rcs_visuals(applied_rcs_torque, applied_rcs_linear_dir_world, delta)
 	_update_telemetry()
 
 
@@ -261,12 +383,37 @@ func _update_exhaust_visual(throttle: float) -> void:
 		return
 	_exhaust_sprite.visible = throttle > 0.01
 	if _exhaust_sprite.visible:
-		_exhaust_sprite.scale = Vector2(1.0, lerpf(0.35, 1.25, throttle))
+		_exhaust_sprite.scale = Vector2(
+			_exhaust_base_scale.x,
+			_exhaust_base_scale.y * lerpf(0.35, 1.25, throttle)
+		)
 
 
-# RCS thrusters are strictly boolean (on/off, never scaled).
-func _update_rcs_visuals(torque_applied: float, linear_dir_world: Vector2) -> void:
-	var torque_threshold := rcs_torque * 0.02
+func _step_rcs_valve(nozzle_key: String, desired_on: bool, delta: float) -> bool:
+	var state: Dictionary = _rcs_valve_state[nozzle_key]
+	var is_on: bool = state["on"]
+	var timer: float = maxf(state["timer"] - delta, 0.0)
+
+	if is_on:
+		# Stay open for at least rcs_min_on_time, and remain open continuously while commanded.
+		if not desired_on and timer <= 0.0:
+			is_on = false
+			timer = maxf(rcs_min_off_time, 0.0)
+	else:
+		# Wait for rcs_min_off_time cooldown before allowing the valve to crack open again.
+		if desired_on and timer <= 0.0:
+			is_on = true
+			timer = maxf(rcs_min_on_time, 0.0)
+
+	state["on"] = is_on
+	state["timer"] = timer
+	return is_on
+
+
+# RCS thrusters are strictly boolean (on/off, never scaled) with minimum valve
+# pulse & cooldown durations so they never strobe at the 60 Hz physics tick rate.
+func _update_rcs_visuals(torque_applied: float, linear_dir_world: Vector2, delta: float) -> void:
+	var torque_threshold := rcs_torque * maxf(rcs_visual_torque_threshold, 0.0)
 	var spin_cw := torque_applied > torque_threshold
 	var spin_ccw := torque_applied < -torque_threshold
 
@@ -282,11 +429,12 @@ func _update_rcs_visuals(torque_applied: float, linear_dir_world: Vector2) -> vo
 		push_port = local_push.x < -0.25
 		push_retro = local_push.y > 0.25
 
-	var bow_port_on := spin_cw or push_starboard
-	var bow_starboard_on := spin_ccw or push_port
-	var stern_port_on := spin_ccw or push_starboard
-	var stern_starboard_on := spin_cw or push_port
-	var retro_on := push_retro
+	var bow_port_on := _step_rcs_valve("bow_port", spin_cw or push_starboard, delta)
+	var bow_starboard_on := _step_rcs_valve("bow_starboard", spin_ccw or push_port, delta)
+	var stern_port_on := _step_rcs_valve("stern_port", spin_ccw or push_starboard, delta)
+	var stern_starboard_on := _step_rcs_valve("stern_starboard", spin_cw or push_port, delta)
+	var retro_port_on := _step_rcs_valve("retro_port", push_retro, delta)
+	var retro_starboard_on := _step_rcs_valve("retro_starboard", push_retro, delta)
 
 	if _rcs_bow_port:
 		_rcs_bow_port.visible = bow_port_on
@@ -297,9 +445,9 @@ func _update_rcs_visuals(torque_applied: float, linear_dir_world: Vector2) -> vo
 	if _rcs_stern_starboard:
 		_rcs_stern_starboard.visible = stern_starboard_on
 	if _rcs_retro_port:
-		_rcs_retro_port.visible = retro_on
+		_rcs_retro_port.visible = retro_port_on
 	if _rcs_retro_starboard:
-		_rcs_retro_starboard.visible = retro_on
+		_rcs_retro_starboard.visible = retro_starboard_on
 
 
 func _update_telemetry() -> void:
@@ -309,24 +457,28 @@ func _update_telemetry() -> void:
 	var fuel_pct := (fuel_mass / _initial_fuel_mass * 100.0) if _initial_fuel_mass > 0.0 else 0.0
 	var max_accel_m_s2 := _current_max_thrust_n / mass
 	var max_accel_g := max_accel_m_s2 / STANDARD_GRAVITY
+	var max_turn_accel := rcs_torque / inertia if inertia > 0.0 else 0.0
 	var active_accel_m_s2 := _current_applied_thrust_n / mass
 	var active_accel_g := active_accel_m_s2 / STANDARD_GRAVITY
 	var speed_m_s := linear_velocity.length() / maxf(pixels_per_meter, 0.001)
 
 	_telemetry_label.text = (
-		"FUEL: %.1f / %.1f kg (%.0f%%)\n"
+		"SHIP: %s\n"
+		+ "FUEL: %.1f / %.1f kg (%.0f%%)\n"
 		+ "MASS: %.1f kg (Dry: %.1f kg)\n"
-		+ "INERTIA: %.1f kg·m²\n"
+		+ "INERTIA: %.1f kg·m² | TURN: %.1f rad/s²\n"
 		+ "MAX THRUST: %.2f kN (%.2f G max)\n"
 		+ "BURN: %.2f kg/s | ACCEL: %.2f G (%.1f m/s²)\n"
 		+ "SPEED: %.1f m/s"
 	) % [
+		_active_ship_name,
 		fuel_mass,
 		_initial_fuel_mass,
 		fuel_pct,
 		mass,
 		_dry_mass,
 		inertia,
+		max_turn_accel,
 		_current_max_thrust_n / 1000.0,
 		max_accel_g,
 		_current_fuel_burn_rate,

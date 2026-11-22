@@ -1,0 +1,47 @@
+[gd_scene format=3 uid="uid://ckg1vnm730fyl"]
+
+[ext_resource type="Texture2D" uid="uid://t7hkbscspryn" path="res://resources/SpaceShipsPack-AntuZ/SpaceShips/A-02.png" id="1_5kmls"]
+[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="2_w4db1"]
+[ext_resource type="PackedScene" uid="uid://crnvk407yitdv" path="res://rcs_thruster_medium.tscn" id="3_w7usv"]
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_5kmls"]
+
+[node name="HullMedium" type="Node2D" unique_id=537960175]
+
+[node name="ShipSprite" type="Sprite2D" parent="." unique_id=1720277905]
+position = Vector2(0, -6)
+rotation = 3.1415927
+scale = Vector2(0.165, 0.165)
+texture = ExtResource("1_5kmls")
+
+[node name="ExhaustSprite" type="Sprite2D" parent="." unique_id=1910269023]
+position = Vector2(0, 32)
+rotation = 3.1415927
+texture = ExtResource("2_w4db1")
+
+[node name="RetroPort" parent="." unique_id=1924505331 instance=ExtResource("3_w7usv")]
+position = Vector2(-6, -4)
+
+[node name="RetroStarboard" parent="." unique_id=67434230 instance=ExtResource("3_w7usv")]
+position = Vector2(6, -4)
+
+[node name="BowPort" parent="." unique_id=726096761 instance=ExtResource("3_w7usv")]
+position = Vector2(-10, -17)
+rotation = -1.5707964
+
+[node name="BowStarboard" parent="." unique_id=178329578 instance=ExtResource("3_w7usv")]
+position = Vector2(10, -17)
+rotation = 1.5707964
+
+[node name="SternPort" parent="." unique_id=1839006800 instance=ExtResource("3_w7usv")]
+position = Vector2(-16, 9)
+rotation = -1.5707964
+
+[node name="SternStarboard" parent="." unique_id=235022729 instance=ExtResource("3_w7usv")]
+position = Vector2(16, 9)
+rotation = 1.5707964
+
+[node name="HullCollision" type="CollisionShape2D" parent="." unique_id=662874506]
+position = Vector2(0, -5.71)
+scale = Vector2(1.16, 1.16)
+shape = SubResource("CapsuleShape2D_5kmls")

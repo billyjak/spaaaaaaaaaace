@@ -3,17 +3,12 @@
 [ext_resource type="Script" uid="uid://d2n0xj7vgcbyr" path="res://player_ship.gd" id="1_u52ul"]
 [ext_resource type="Script" uid="uid://dbjhd6oxqqrtb" path="res://grid.gd" id="1_vonw3"]
 [ext_resource type="Texture2D" uid="uid://b726et0wsydls" path="res://resources/milky_way/milky-way-3.jpg" id="3_0b4ue"]
-[ext_resource type="Texture2D" uid="uid://u57k2uilga3" path="res://resources/SpaceShipsPack-AntuZ/SpaceShips/D-10.png" id="3_oi3di"]
-[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="5_2orkt"]
 [ext_resource type="Texture2D" uid="uid://da0jfhni28hws" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_017.png" id="5_n6hdu"]
 [ext_resource type="Texture2D" uid="uid://mpe3a73w2w3y" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_024.png" id="6_1ainy"]
-[ext_resource type="PackedScene" uid="uid://d3ctjau27uomy" path="res://rcs_thruster.tscn" id="6_aicyk"]
 [ext_resource type="Texture2D" uid="uid://bjr58npngv1c1" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_018.png" id="6_km5ld"]
 [ext_resource type="Texture2D" uid="uid://1nmrkr3lin1o" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_019.png" id="8_km5ld"]
 [ext_resource type="Texture2D" uid="uid://bpg5wjsxmxle3" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_025.png" id="9_i2t4f"]
 [ext_resource type="Script" uid="uid://b3pdsm7vex8u1" path="res://track.gd" id="10_8cye3"]
-
-[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_lnbxt"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_telemetry"]
 content_margin_left = 14.0
@@ -42,16 +37,6 @@ position = Vector2(960, 540)
 continuous_cd = 1
 script = ExtResource("1_u52ul")
 
-[node name="Polygon2D" type="Polygon2D" parent="PlayerShip" unique_id=1504870624]
-visible = false
-polygon = PackedVector2Array(-10, 10, 10, 10, 0, -30)
-
-[node name="CollisionShape2D" type="CollisionShape2D" parent="PlayerShip" unique_id=461367236]
-position = Vector2(0, -5.71)
-shape = SubResource("CapsuleShape2D_lnbxt")
-
-[node name="CollisionPolygon2D" type="CollisionPolygon2D" parent="PlayerShip" unique_id=2105871954]
-
 [node name="Camera2D" type="Camera2D" parent="PlayerShip" unique_id=18992082]
 
 [node name="CanvasLayer" type="CanvasLayer" parent="PlayerShip/Camera2D" unique_id=535811549]
@@ -70,61 +55,28 @@ texture = ExtResource("3_0b4ue")
 expand_mode = 1
 stretch_mode = 5
 
-[node name="ShipSprite" type="Sprite2D" parent="PlayerShip" unique_id=1018019306]
-position = Vector2(0, -6)
-rotation = 3.1415927
-scale = Vector2(0.35, 0.35)
-texture = ExtResource("3_oi3di")
-
-[node name="ExhaustSprite" type="Sprite2D" parent="PlayerShip" unique_id=1875678796]
-position = Vector2(0, 32)
-rotation = 3.1415927
-texture = ExtResource("5_2orkt")
-
 [node name="TelemetryLayer" type="CanvasLayer" parent="PlayerShip" unique_id=1928374650]
 layer = 10
 
 [node name="TelemetryPanel" type="PanelContainer" parent="PlayerShip/TelemetryLayer" unique_id=1928374651]
 offset_left = 20.0
 offset_top = 20.0
-offset_right = 360.0
-offset_bottom = 180.0
+offset_right = 380.0
+offset_bottom = 205.0
 theme_override_styles/panel = SubResource("StyleBoxFlat_telemetry")
 
 [node name="TelemetryLabel" type="Label" parent="PlayerShip/TelemetryLayer/TelemetryPanel" unique_id=1928374652]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.88, 0.96, 1, 1)
 theme_override_font_sizes/font_size = 18
-text = "FUEL: --"
-
-[node name="RetroPort" parent="PlayerShip" unique_id=33922273 instance=ExtResource("6_aicyk")]
-position = Vector2(-8, -13)
-
-[node name="RetroStarboard" parent="PlayerShip" unique_id=507779482 instance=ExtResource("6_aicyk")]
-position = Vector2(8, -13)
-
-[node name="BowPort" parent="PlayerShip" unique_id=147687946 instance=ExtResource("6_aicyk")]
-position = Vector2(-7, -24)
-rotation = 4.712389
-
-[node name="BowStarboard" parent="PlayerShip" unique_id=487858911 instance=ExtResource("6_aicyk")]
-position = Vector2(7, -24)
-rotation = 1.5707964
-
-[node name="SternPort" parent="PlayerShip" unique_id=649362611 instance=ExtResource("6_aicyk")]
-position = Vector2(-17, 8)
-rotation = 4.712389
-
-[node name="SternStarboard" parent="PlayerShip" unique_id=1192695473 instance=ExtResource("6_aicyk")]
-position = Vector2(17, 8)
-rotation = 1.5707964
+text = "SHIP: --"
 
 [node name="Station1" type="Parallax2D" parent="." unique_id=1089561932]
 scroll_scale = Vector2(0.01, 0.01)
 
 [node name="Sprite2D" type="Sprite2D" parent="Station1" unique_id=1624141930]
 z_index = -20
-position = Vector2(886, 521)
+position = Vector2(851, 521)
 scale = Vector2(0.5, 0.5)
 texture = ExtResource("5_n6hdu")
 

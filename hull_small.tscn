@@ -1,0 +1,49 @@
+[gd_scene format=3 uid="uid://cxy8dp1cklx6u"]
+
+[ext_resource type="Texture2D" uid="uid://bwkdemivux8uk" path="res://resources/SpaceShipsPack-AntuZ/SpaceShips/A-05.png" id="1_yskr0"]
+[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="2_1vopm"]
+[ext_resource type="PackedScene" uid="uid://ch1s2eunf4tyr" path="res://rcs_thruster_small.tscn" id="3_ew50s"]
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_yskr0"]
+
+[node name="HullSmall" type="Node2D" unique_id=1879483145]
+position = Vector2(0, 4)
+
+[node name="ShipSprite" type="Sprite2D" parent="." unique_id=1413598624]
+position = Vector2(0, -6)
+rotation = 3.1415927
+scale = Vector2(0.165, 0.165)
+texture = ExtResource("1_yskr0")
+
+[node name="ExhaustSprite" type="Sprite2D" parent="." unique_id=19998154]
+position = Vector2(-4.9737924e-14, 13.000002)
+rotation = 3.1415927
+scale = Vector2(0.445, 0.445)
+texture = ExtResource("2_1vopm")
+
+[node name="RetroPort" parent="." unique_id=962464482 instance=ExtResource("3_ew50s")]
+position = Vector2(-2, -9.000001)
+
+[node name="RetroStarboard" parent="." unique_id=828939712 instance=ExtResource("3_ew50s")]
+position = Vector2(2, -9.000001)
+
+[node name="BowPort" parent="." unique_id=1776403151 instance=ExtResource("3_ew50s")]
+position = Vector2(-3.0000005, -8)
+rotation = -1.5707964
+
+[node name="BowStarboard" parent="." unique_id=888368450 instance=ExtResource("3_ew50s")]
+position = Vector2(3.0000005, -8)
+rotation = 1.5707964
+
+[node name="SternPort" parent="." unique_id=1812385195 instance=ExtResource("3_ew50s")]
+position = Vector2(-3.0000005, 2)
+rotation = -1.5707964
+
+[node name="SternStarboard" parent="." unique_id=1151761458 instance=ExtResource("3_ew50s")]
+position = Vector2(3.0000005, 2)
+rotation = 1.5707964
+
+[node name="HullCollision" type="CollisionShape2D" parent="." unique_id=1783594184]
+position = Vector2(0, -5.71)
+scale = Vector2(0.525, 0.525)
+shape = SubResource("CapsuleShape2D_yskr0")

@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://ch1s2eunf4tyr"]
+
+[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="1_4vrsx"]
+
+[node name="RcsThrusterSmall" type="Node2D" unique_id=962464482]
+scale = Vector2(0.33, 0.33)
+
+[node name="Plume" type="Sprite2D" parent="." unique_id=383417709]
+self_modulate = Color(18.892, 18.892, 18.892, 1)
+scale = Vector2(0.2, 0.4)
+texture = ExtResource("1_4vrsx")

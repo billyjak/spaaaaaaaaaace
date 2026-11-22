@@ -1,5 +1,32 @@
 # SPAAAAAAAAAACE — Game Design & MVP Technical Implementation Plan
 
+## 0. Current Progress & Next Session Queue
+
+### Completed So Far
+* **SI Component Mass, Inertia & Dynamic Fuel Physics (`player_ship.gd`):**
+  * Total `mass` computed from editable `@export` parts (`thruster_mass`, `fuel_mass`, `ship_part_3_mass`, `ship_part_4_mass`, `ship_part_5_mass`) via `_get_ship_parts()`.
+  * Uniform `inertia_radius_m` (`I = Σ m · r²`), updating dynamically every tick as `fuel_mass` burns.
+  * Square-cube thruster scaling (`max_thrust = ref_thrust * (thruster_mass / ref_mass)^(2/3)`), linear fuel consumption (`kg/s = F / (I_sp * 9.80665)`), and `reset_fuel` input support.
+  * Live top-left telemetry HUD (`TelemetryLayer`) showing Fuel, Mass, Inertia, Max Thrust/G, Burn Rate, Accel, and Speed.
+* **RCS Pulse-Clamping Bugfix (`player_ship.gd`):**
+  * Fixed the 2-frame bang-bang overshoot ghost-spin bug by clamping final-tick stopping torque/force to exact zero-crossing pulses.
+* **Instanced Boolean RCS Thrusters (`rcs_thruster.tscn`, `level.tscn`, `player_ship.gd`):**
+  * 6 reusable `RCSThruster` instances (`BowPort`, `BowStarboard`, `SternPort`, `SternStarboard`, `RetroPort`, `RetroStarboard`) wired to strict boolean on/off visibility based on rotational and linear RCS firing.
+
+### Logged Thoughts & Next Implementation Step (Pick Up Here Next!)
+1. **Fix 60 Hz RCS Valve Flickering:**
+   * *Problem:* Right now RCS sprites toggle on/off every single physics tick (`60 Hz`), which makes them strobe/flicker unrealistically—real RCS solenoid valves cannot cycle 60 times a second.
+   * *Planned Fix:* Add an editable minimum pulse duration / hold timer (e.g., `rcs_min_pulse_time` ≈ `0.05–0.08 s`) and/or deadband hysteresis so RCS bursts look crisp and physically plausible instead of strobing at 60 Hz.
+2. **Implement 3 Distinct Ships (Acceleration vs. Turn Rate Trade-Off):**
+   * *Architecture (Single `PlayerShip` + External Data):* Keep **one** `PlayerShip` node (with its `Camera2D`, `TelemetryLayer`, and `player_ship.gd` intact—no duplicating scenes/cameras). Selecting a ship simply loads a ship profile onto `PlayerShip` (updating part masses, `inertia_radius_m`, sprite texture/scale, collision size, and nozzle offsets).
+   * *Storage Format (`ships.json` vs. Godot `.tres` Resource):* JSON (`res://ships.json`) is totally valid, universal, and easy to edit in `nvim` via Godot's built-in `JSON.parse_string()` (Godot's native alternative is a custom `Resource` `.tres` file, which adds Inspector sliders & drag-and-drop textures; either works cleanly).
+   * *3 Ship Profiles (Driven by Real Mass, Square-Cube Thruster & Fuel Math):*
+     * **Light / Agile Ship:** Smallest `thruster_mass` + `fuel_mass` → lowest total mass & inertia → **highest RCS turn rate**, lowest straight-line acceleration.
+     * **Balanced Ship:** Medium `thruster_mass` + `fuel_mass` (around current `35 kg` thruster / `200 kg` fuel baseline).
+     * **Heavy / High-Accel Ship:** Larger `thruster_mass` + proportionally larger `fuel_mass` → **highest straight-line acceleration**, **lowest RCS turn rate** due to higher total mass & inertia.
+
+---
+
 ## 1. Vision & Core Design Pillars
 
 ### 1.1 Honest Newtonian Physics & Component Mass Math
@@ -204,41 +231,3 @@ A `CanvasLayer` HUD displaying:
    * Test all 3 steering modes (`STICK_AIM`, `MOUSE_AIM`, `MANUAL_RCS`) and verify that `Decoupled` mode (toggle `R`/`R1` or hold `Shift`/`L2`) disables automatic rotational braking.
 4. **Track, Checkpoints & Persistence Verification:**
    * Verify closed-loop generation for all 3 preset tracks and random seeds, confirm translucent track surface rendering and wall collisions, complete a 3-lap run, and verify `user://best_times.cfg` persists records across restarts.
-
-
----
-
-## 5. Development Log & Next Session Queue
-
-### Completed So Far (Step 1)
-* **SI Component Mass & Dynamic Fuel Physics (`player_ship.gd`):**
-  * Editable `@export` part masses (`thruster_mass`, `fuel_mass`, `ship_part_3_mass`, `ship_part_4_mass`, `ship_part_5_mass`) structured via `_get_ship_parts()` for future per-part Center-of-Mass / inertia radius expansion.
-  * Square-cube thruster scaling (`max_thrust = reference_thrust * (thruster_mass / reference_thruster_mass)^(2/3)`).
-  * Real linear fuel burn (`kg/s = F / (I_sp * 9.80665)`) updating `mass` and `inertia` every physics tick (`I = total_mass * inertia_radius_m²`), plus `reset_fuel` input binding.
-  * Fixed the 2-frame bang-bang torque overshoot ("~1 RPM ghost spin") using single-tick proportional torque clamping for rotational stabilization, stick aiming, and linear RCS braking.
-* **Thruster Visuals & Live Telemetry (`level.tscn`, `rcs_thruster.tscn`, `player_ship.gd`):**
-  * Main `ExhaustSprite` visibility & scale tied to active main thruster output.
-  * 6 reusable `RCSThruster` sub-scene instances (`BowPort`, `BowStarboard`, `SternPort`, `SternStarboard`, `RetroPort`, `RetroStarboard`) wired with boolean on/off visibility based on active rotational and local-space linear RCS thrust.
-  * Top-left `TelemetryLayer` HUD showing live Fuel, Mass (wet/dry), Inertia, Max Thrust/G, Burn Rate/Accel, and Speed.
-
----
-
-### Next Session Queue (Step 2)
-
-#### 1. Fix 60 Hz RCS Visual Flickering
-* **Problem:** Because RCS thruster visibility is evaluated every physics tick (`60 Hz`), tiny corrective pulses cause the nozzles to strobe/flicker at 60 FPS, which looks unrealistic since real RCS solenoid valves have a minimum pulse width and don't cycle at 60 Hz.
-* **Planned Fix:**
-  * Add a configurable minimum valve pulse duration / visual hold timer (e.g., `rcs_min_pulse_duration = 0.06–0.10 s`) and/or a visual trigger threshold / hysteresis per nozzle so once an RCS thruster fires, it stays cleanly lit for a believable valve puff instead of strobing frame-by-frame.
-
-#### 2. Implement 3 Distinct Ships (Acceleration vs. RCS Turn Rate Trade-Off)
-* **Design Goal:** Three playable ship profiles driven by real SI `thruster_mass` and `fuel_mass` trade-offs (with square-cube thrust scaling and uniform `inertia_radius_m` / larger hull radius as appropriate):
-  1. **Light Ship:** Smallest thruster mass & fuel mass → lowest straight-line acceleration, highest RCS turn rate (`α = τ / I`).
-  2. **Medium Ship:** Balanced thruster mass, fuel mass, and turn rate (current baseline).
-  3. **Heavy Ship:** Largest thruster mass & fuel mass → highest straight-line acceleration (bigger thruster overcoming dry hull mass), lowest RCS turn rate (highest total mass & inertia).
-* **How to Structure Multiple Ships in Godot (No Duplicating `Camera2D` / `HUD`):**
-  * Keep **one** `PlayerShip` scene/node (with its attached `Camera2D`, `TelemetryLayer`, and `RCSThrusters`), and apply a swappable **Ship Profile** to it whenever a ship is selected (updating its part masses, `inertia_radius_m`, sprite texture/scale, collision size, and RCS nozzle positions).
-  * **Storage Format Choice (Decide when resuming):**
-    * **JSON (`ships.json`):** Universal, plain-text, easy to edit in `nvim`, easy to diff in Git, and mod-friendly.
-    * **Godot Custom `Resource` (`.tres`):** Also plain-text, natively editable in the Godot Inspector with drag-and-drop `Texture2D` previews and strict GDScript typing (no manual JSON parsing).
-    * Both formats plug cleanly into the exact same `apply_ship_profile(profile)` method on `PlayerShip`.
-* **Testing Hook:** Add a quick ship-cycle key/button so all 3 ships can be compared immediately on the track before building the Main Menu.
