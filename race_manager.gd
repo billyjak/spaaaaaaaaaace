@@ -38,6 +38,7 @@ var _track: Node = null
 var _go_banner_timer: float = 0.0
 var _split_flash_timer: float = 0.0
 var _last_finish_is_best: bool = false
+var is_paused: bool = false
 
 # UI Nodes (built programmatically inside this full-rect Control so scene stays lightweight)
 var _timer_panel: PanelContainer = null
@@ -45,6 +46,11 @@ var _timer_label: Label = null
 var _status_label: Label = null
 var _split_label: Label = null
 var _countdown_label: Label = null
+var _pause_panel: PanelContainer = null
+var _btn_pause_resume: Button = null
+var _btn_pause_telemetry: Button = null
+var _btn_pause_restart: Button = null
+var _btn_pause_menu: Button = null
 var _finish_panel: PanelContainer = null
 var _finish_title_label: Label = null
 var _finish_time_label: Label = null
@@ -55,6 +61,7 @@ var _btn_main_menu: Button = null
 
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_build_ui()
@@ -118,6 +125,10 @@ func begin_race(is_restart: bool) -> void:
 
 	if _finish_panel != null:
 		_finish_panel.visible = false
+	if _pause_panel != null:
+		_pause_panel.visible = false
+	is_paused = false
+	get_tree().paused = false
 	if _finish_note_label != null:
 		_finish_note_label.text = ""
 	if _split_label != null:
@@ -125,9 +136,49 @@ func begin_race(is_restart: bool) -> void:
 	_update_hud()
 
 
+func set_paused(paused_state: bool) -> void:
+	if state == RaceState.FINISHED:
+		return
+	is_paused = paused_state
+	get_tree().paused = is_paused
+	if _pause_panel != null:
+		_pause_panel.visible = is_paused
+	if is_paused:
+		_refresh_pause_telemetry_button()
+		if _btn_pause_resume != null:
+			_btn_pause_resume.grab_focus()
+
+
+func _refresh_pause_telemetry_button() -> void:
+	if _btn_pause_telemetry == null:
+		return
+	var gs := get_node_or_null("/root/GameState")
+	var shown: bool = bool(gs.show_telemetry) if gs != null else false
+	_btn_pause_telemetry.text = "Show Telemetry: %s" % ("ON" if shown else "OFF")
+
+
+func _on_pause_telemetry_pressed() -> void:
+	var gs := get_node_or_null("/root/GameState")
+	if gs != null and gs.has_method("toggle_telemetry"):
+		gs.toggle_telemetry()
+	_refresh_pause_telemetry_button()
+
+
 func _process(delta: float) -> void:
 	if _ship == null or _track == null:
 		_bind_scene_nodes()
+
+	# Pause toggle (`pause` -> Controller Start / Plus or Escape)
+	if state != RaceState.FINISHED:
+		if InputMap.has_action("pause") and Input.is_action_just_pressed("pause"):
+			set_paused(not is_paused)
+			return
+		if is_paused and Input.is_action_just_pressed("ui_cancel"):
+			set_paused(false)
+			return
+
+	if is_paused:
+		return
 
 	# Quick restart hotkey (`restart` -> Controller Select / Back / Minus, button 4)
 	if InputMap.has_action("restart") and Input.is_action_just_pressed("restart"):
@@ -192,31 +243,56 @@ func _complete_race() -> void:
 	if _track != null and _track.has_method("set_active_checkpoint"):
 		_track.set_active_checkpoint(total_checkpoints + 1)
 
-	var key := _current_record_key()
+	var t_type: int = int(_track.active_track_type) if (_track != null and "active_track_type" in _track) else 1
+	var seed_val: int = int(_track.active_seed) if (_track != null and "active_seed" in _track) else 0
+	var tier := _get_ship_tier()
+	var weight_idx := _get_ship_weight_class_index()
 	var ship_class := _get_ship_weight_class_label()
-	var prev_record: Dictionary = session_best_times.get(key, {})
-	var prev_time: float = float(prev_record.get("time", INF))
 	var delta_str := ""
 
-	if race_time < prev_time:
-		_last_finish_is_best = true
-		if prev_time < INF:
-			delta_str = " (-%s)" % format_time(prev_time - race_time)
-		session_best_times[key] = {
-			"time": race_time,
-			"ship_class": ship_class,
-		}
+	var gs := get_node_or_null("/root/GameState")
+	if gs != null:
+		var res: Dictionary = gs.record_run_time(t_type, seed_val, tier, weight_idx, race_time)
+		_last_finish_is_best = bool(res["is_new_best"])
+		var prev_time: float = float(res["prev_time"])
+		if _last_finish_is_best:
+			if prev_time < INF:
+				delta_str = " (-%s)" % format_time(prev_time - race_time)
+		else:
+			delta_str = " (+%s)" % format_time(race_time - prev_time)
+		session_best_times[_current_record_key()] = res["best"]
 	else:
-		_last_finish_is_best = false
-		delta_str = " (+%s)" % format_time(race_time - prev_time)
+		var key := _current_record_key()
+		var prev_record: Dictionary = session_best_times.get(key, {})
+		var prev_time: float = float(prev_record.get("time", INF))
+		if race_time < prev_time:
+			_last_finish_is_best = true
+			if prev_time < INF:
+				delta_str = " (-%s)" % format_time(prev_time - race_time)
+			session_best_times[key] = {
+				"time": race_time,
+				"ship_class": ship_class,
+			}
+		else:
+			_last_finish_is_best = false
+			delta_str = " (+%s)" % format_time(race_time - prev_time)
 
 	_show_finish_overlay(delta_str)
+
+
+func _get_active_best_record() -> Dictionary:
+	var gs := get_node_or_null("/root/GameState")
+	if gs != null:
+		var t_type: int = int(_track.active_track_type) if (_track != null and "active_track_type" in _track) else 1
+		var seed_val: int = int(_track.active_seed) if (_track != null and "active_seed" in _track) else 0
+		return gs.get_best_for_active_run(t_type, seed_val, _get_ship_tier())
+	return session_best_times.get(_current_record_key(), {})
 
 
 func _show_finish_overlay(delta_str: String) -> void:
 	if _finish_panel == null:
 		return
-	var best_rec: Dictionary = session_best_times.get(_current_record_key(), {})
+	var best_rec: Dictionary = _get_active_best_record()
 	var best_t: float = float(best_rec.get("time", race_time))
 	var best_cls: String = str(best_rec.get("ship_class", _get_ship_weight_class_label()))
 
@@ -228,7 +304,14 @@ func _show_finish_overlay(delta_str: String) -> void:
 		_finish_title_label.add_theme_color_override("font_color", Color(0.85, 0.96, 1.0, 1.0))
 
 	_finish_time_label.text = "%s%s" % [format_time(race_time), delta_str]
-	var track_label: String = _track.get_track_type_label() if (_track != null and _track.has_method("get_track_type_label")) else "Track"
+	var gs := get_node_or_null("/root/GameState")
+	var track_label := ""
+	if gs != null and bool(gs.launched_from_menu):
+		track_label = str(gs.get_active_track_info()["name"])
+	elif _track != null and _track.has_method("get_track_type_label"):
+		track_label = _track.get_track_type_label()
+	else:
+		track_label = "Track"
 	var seed_val: int = int(_track.active_seed) if (_track != null and "active_seed" in _track) else 0
 	var tier_num: int = _get_ship_tier()
 	_finish_details_label.text = (
@@ -248,10 +331,21 @@ func _on_restart_pressed() -> void:
 
 
 func _on_main_menu_pressed() -> void:
+	is_paused = false
+	get_tree().paused = false
+	var gs := get_node_or_null("/root/GameState")
+	if gs != null:
+		gs.skip_title_screen = true
 	if ResourceLoader.exists("res://main_menu.tscn"):
 		get_tree().change_scene_to_file("res://main_menu.tscn")
 	elif _finish_note_label != null:
-		_finish_note_label.text = "Main Menu will be wired in Step 2!"
+		_finish_note_label.text = "Main Menu scene not found."
+
+
+func _get_ship_weight_class_index() -> int:
+	if _ship != null and "installed_hull" in _ship and _ship.installed_hull != null:
+		return clampi(int(_ship.installed_hull.size_class), 0, 2)
+	return 0
 
 
 func _current_record_key() -> String:
@@ -289,7 +383,7 @@ func _update_hud() -> void:
 			if next_gate_index >= total_checkpoints
 			else "CP %d / %d" % [next_gate_index, total_checkpoints]
 		)
-		var best_rec: Dictionary = session_best_times.get(_current_record_key(), {})
+		var best_rec: Dictionary = _get_active_best_record()
 		var best_text := (
 			"BEST: %s (%s)" % [format_time(float(best_rec["time"])), str(best_rec["ship_class"])]
 			if not best_rec.is_empty()
@@ -416,7 +510,60 @@ func _build_ui() -> void:
 	_countdown_label.visible = false
 	add_child(_countdown_label)
 
-	# 4. Centered Race Finish Overlay (Gamepad + Mouse navigable)
+	# 4. Centered Pause Menu Overlay (Gamepad + Mouse navigable; active while SceneTree is paused)
+	_pause_panel = PanelContainer.new()
+	_pause_panel.name = "PausePanel"
+	_pause_panel.anchor_left = 0.5
+	_pause_panel.anchor_right = 0.5
+	_pause_panel.anchor_top = 0.5
+	_pause_panel.anchor_bottom = 0.5
+	_pause_panel.offset_left = -210.0
+	_pause_panel.offset_right = 210.0
+	_pause_panel.offset_top = -165.0
+	_pause_panel.offset_bottom = 165.0
+	_pause_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_pause_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_pause_panel.add_theme_stylebox_override("panel", _make_panel_style(Color(0.35, 0.82, 1.0, 0.78)))
+	_pause_panel.visible = false
+	add_child(_pause_panel)
+
+	var pause_vbox := VBoxContainer.new()
+	pause_vbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	pause_vbox.add_theme_constant_override("separation", 12)
+	_pause_panel.add_child(pause_vbox)
+
+	var pause_title := Label.new()
+	pause_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pause_title.add_theme_font_size_override("font_size", 32)
+	pause_title.add_theme_color_override("font_color", Color(0.90, 0.97, 1.0, 1.0))
+	pause_title.text = "PAUSED"
+	pause_vbox.add_child(pause_title)
+
+	_btn_pause_resume = Button.new()
+	_btn_pause_resume.text = "Resume"
+	_btn_pause_resume.custom_minimum_size = Vector2(260.0, 44.0)
+	_btn_pause_resume.pressed.connect(func() -> void: set_paused(false))
+	pause_vbox.add_child(_btn_pause_resume)
+
+	_btn_pause_telemetry = Button.new()
+	_btn_pause_telemetry.text = "Show Telemetry: OFF"
+	_btn_pause_telemetry.custom_minimum_size = Vector2(260.0, 44.0)
+	_btn_pause_telemetry.pressed.connect(_on_pause_telemetry_pressed)
+	pause_vbox.add_child(_btn_pause_telemetry)
+
+	_btn_pause_restart = Button.new()
+	_btn_pause_restart.text = "Restart"
+	_btn_pause_restart.custom_minimum_size = Vector2(260.0, 44.0)
+	_btn_pause_restart.pressed.connect(_on_restart_pressed)
+	pause_vbox.add_child(_btn_pause_restart)
+
+	_btn_pause_menu = Button.new()
+	_btn_pause_menu.text = "Main Menu"
+	_btn_pause_menu.custom_minimum_size = Vector2(260.0, 44.0)
+	_btn_pause_menu.pressed.connect(_on_main_menu_pressed)
+	pause_vbox.add_child(_btn_pause_menu)
+
+	# 5. Centered Race Finish Overlay (Gamepad + Mouse navigable)
 	_finish_panel = PanelContainer.new()
 	_finish_panel.name = "FinishPanel"
 	_finish_panel.anchor_left = 0.5

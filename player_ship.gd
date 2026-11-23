@@ -87,6 +87,8 @@ const MIN_INERTIA := 0.01
 @export var redline_temp_k: float = 650.0
 ## Heat fraction below which the thermal safety interlock re-enables Overburn after hitting 100%.
 @export_range(0.1, 0.9, 0.05) var overheat_recovery_fraction: float = 0.25
+## Enable developer mid-flight D-pad ship/part cycling and fuel refill hotkey.
+@export var dev_hotkeys_enabled: bool = false
 
 var rotational_stabilize := true
 var controls_locked: bool = false
@@ -143,11 +145,28 @@ var _rcs_valve_state: Dictionary = {
 	"retro_starboard": {"on": false, "timer": 0.0},
 }
 
+@onready var _telemetry_panel: Control = get_node_or_null("TelemetryLayer/TelemetryPanel")
 @onready var _telemetry_label: Label = get_node_or_null("TelemetryLayer/TelemetryPanel/TelemetryLabel")
 @onready var _track: Node = get_parent().get_node_or_null("Track") if get_parent() != null else null
 
 
 func _ready() -> void:
+	var gs := get_node_or_null("/root/GameState")
+	if _telemetry_panel != null:
+		_telemetry_panel.visible = bool(gs.show_telemetry) if gs != null else false
+	if gs != null and gs.has_signal("telemetry_visibility_changed"):
+		if not gs.telemetry_visibility_changed.is_connected(_on_telemetry_visibility_changed):
+			gs.telemetry_visibility_changed.connect(_on_telemetry_visibility_changed)
+
+	if gs != null and bool(gs.launched_from_menu):
+		_active_size_index = clampi(int(gs.selected_weight_class), 0, 2)
+		var init_tier := clampi(int(gs.selected_tech_tier), 1, 4)
+		_hull_tier = init_tier
+		_engine_tier = init_tier
+		_rcs_tier = init_tier
+		equip_size_and_tiers(_active_size_index, _hull_tier, _engine_tier, _rcs_tier)
+		return
+
 	_active_size_index = clampi(starting_ship, 0, 2)
 	var init_tier := clampi(starting_tier, 1, 4)
 	_hull_tier = init_tier
@@ -165,6 +184,11 @@ func _ready() -> void:
 		_refresh_all_stats()
 	else:
 		equip_size_and_tiers(_active_size_index, _hull_tier, _engine_tier, _rcs_tier)
+
+
+func _on_telemetry_visibility_changed(is_visible: bool) -> void:
+	if _telemetry_panel != null:
+		_telemetry_panel.visible = is_visible
 
 
 func _sync_indices_from_installed_parts() -> void:
@@ -570,27 +594,28 @@ func _recalculate_propulsion() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if InputMap.has_action("cycle_ship_size") and Input.is_action_just_pressed("cycle_ship_size"):
-		cycle_ship_size()
-	if InputMap.has_action("cycle_hull") and Input.is_action_just_pressed("cycle_hull"):
-		cycle_hull_tier()
-	if InputMap.has_action("cycle_engine") and Input.is_action_just_pressed("cycle_engine"):
-		cycle_engine_tier()
-	if InputMap.has_action("cycle_rcs") and Input.is_action_just_pressed("cycle_rcs"):
-		cycle_rcs_tier()
+	if dev_hotkeys_enabled:
+		if InputMap.has_action("cycle_ship_size") and Input.is_action_just_pressed("cycle_ship_size"):
+			cycle_ship_size()
+		if InputMap.has_action("cycle_hull") and Input.is_action_just_pressed("cycle_hull"):
+			cycle_hull_tier()
+		if InputMap.has_action("cycle_engine") and Input.is_action_just_pressed("cycle_engine"):
+			cycle_engine_tier()
+		if InputMap.has_action("cycle_rcs") and Input.is_action_just_pressed("cycle_rcs"):
+			cycle_rcs_tier()
 
-	if InputMap.has_action("swap_ship_small") and Input.is_action_just_pressed("swap_ship_small"):
-		equip_size_and_tiers(0, _hull_tier, _engine_tier, _rcs_tier)
-	elif InputMap.has_action("swap_ship_medium") and Input.is_action_just_pressed("swap_ship_medium"):
-		equip_size_and_tiers(1, _hull_tier, _engine_tier, _rcs_tier)
-	elif InputMap.has_action("swap_ship_large") and Input.is_action_just_pressed("swap_ship_large"):
-		equip_size_and_tiers(2, _hull_tier, _engine_tier, _rcs_tier)
+		if InputMap.has_action("swap_ship_small") and Input.is_action_just_pressed("swap_ship_small"):
+			equip_size_and_tiers(0, _hull_tier, _engine_tier, _rcs_tier)
+		elif InputMap.has_action("swap_ship_medium") and Input.is_action_just_pressed("swap_ship_medium"):
+			equip_size_and_tiers(1, _hull_tier, _engine_tier, _rcs_tier)
+		elif InputMap.has_action("swap_ship_large") and Input.is_action_just_pressed("swap_ship_large"):
+			equip_size_and_tiers(2, _hull_tier, _engine_tier, _rcs_tier)
 
-	if Input.is_action_just_pressed("reset_fuel"):
-		fuel_mass = _initial_fuel_mass
-		current_heat_kj = 0.0
-		overburn_locked_out = false
-		is_overburning = false
+		if InputMap.has_action("reset_fuel") and Input.is_action_just_pressed("reset_fuel"):
+			fuel_mass = _initial_fuel_mass
+			current_heat_kj = 0.0
+			overburn_locked_out = false
+			is_overburning = false
 
 	if Input.is_action_just_pressed("toggle_rotational_stabilization"):
 		rotational_stabilize = not rotational_stabilize

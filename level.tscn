@@ -105,6 +105,32 @@ theme_override_styles/panel = SubResource("StyleBoxFlat_telemetry")
 layout_mode = 2
 script = ExtResource("7_heatgauge")
 
+[node name="ControlsPanel" type="PanelContainer" parent="PlayerShip/TelemetryLayer" unique_id=1928374658]
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -250.0
+offset_top = -182.0
+offset_right = -20.0
+offset_bottom = -20.0
+grow_horizontal = 0
+grow_vertical = 0
+mouse_filter = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_telemetry")
+
+[node name="ControlsLabel" type="Label" parent="PlayerShip/TelemetryLayer/ControlsPanel" unique_id=1928374659]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.84, 0.94, 1, 0.92)
+theme_override_font_sizes/font_size = 15
+text = "L-Stick: Aim
+RT: Main Thruster
+A: Overburn
+LB: Stabilize
+Select: Restart
+Start: Menu"
+
 [node name="RaceHUD" type="Control" parent="PlayerShip/TelemetryLayer" unique_id=1928374657]
 layout_mode = 3
 anchors_preset = 15

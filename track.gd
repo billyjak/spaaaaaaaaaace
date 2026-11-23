@@ -20,6 +20,8 @@ const TRACK_TYPE_COUNT: int = 4
 @export var track_type: TrackType = TrackType.TYPE_1
 ## JSON file where favorite track seeds are saved when pressing `save_track`.
 @export var saved_tracks_path: String = "user://saved_tracks.json"
+## Enable developer track-swapping & saving hotkeys (`N`, `J`, `S`) during flight.
+@export var dev_hotkeys_enabled: bool = false
 
 @export_group("Track Geometry (Medium Circuit Defaults)")
 ## Number of radial control points around the loop (fewer = sweeping speedway, more = twisty technical).
@@ -104,8 +106,15 @@ func _ready() -> void:
 		_inner_line.visible = true
 
 	_ensure_holo_visual_nodes()
-	active_track_type = track_type
-	generate_track(track_seed, active_track_type)
+	var gs := get_node_or_null("/root/GameState")
+	if gs != null and bool(gs.launched_from_menu):
+		var info: Dictionary = gs.get_active_track_info()
+		active_track_type = int(info["track_type"]) as TrackType
+		track_type = active_track_type
+		generate_track(int(info["seed"]), active_track_type)
+	else:
+		active_track_type = track_type
+		generate_track(track_seed, active_track_type)
 
 
 func _process(delta: float) -> void:
@@ -114,12 +123,43 @@ func _process(delta: float) -> void:
 		if _save_status_timer <= 0.0:
 			save_status_text = ""
 
-	if InputMap.has_action("new_track") and Input.is_action_just_pressed("new_track"):
-		cycle_track_type()
-	if InputMap.has_action("new_dynamic_track") and Input.is_action_just_pressed("new_dynamic_track"):
-		generate_track(0, TrackType.DYNAMIC)
-	if InputMap.has_action("save_track") and Input.is_action_just_pressed("save_track"):
-		save_current_track()
+	if dev_hotkeys_enabled:
+		if InputMap.has_action("new_track") and Input.is_action_just_pressed("new_track"):
+			cycle_track_type()
+		if InputMap.has_action("new_dynamic_track") and Input.is_action_just_pressed("new_dynamic_track"):
+			generate_track(0, TrackType.DYNAMIC)
+		if InputMap.has_action("save_track") and Input.is_action_just_pressed("save_track"):
+			save_current_track()
+
+
+## Pure-geometry generator for Main Menu minimap previews (no colliders, visuals, or ship placement).
+func build_preview_geometry(seed_override: int, type_override: int) -> Dictionary:
+	var t_type: TrackType = clampi(type_override, TrackType.TYPE_1, TrackType.DYNAMIC) as TrackType
+	var use_seed := seed_override if seed_override != 0 else 1000001
+	var built := false
+	for attempt in range(28):
+		_rng.seed = use_seed + int(t_type) * 104729 + attempt * 7919
+		if _try_build_geometry(t_type):
+			built = true
+			break
+	if not built:
+		_build_fallback_geometry()
+	_rebuild_centerline_arc_table()
+	# Compute total turning angle without running camera rail Laplacian smoothing
+	var turn_sum := 0.0
+	var n := centerline_points.size()
+	if n >= 3:
+		for i in n:
+			var d0 := (centerline_points[i] - centerline_points[(i - 1 + n) % n]).normalized()
+			var d1 := (centerline_points[(i + 1) % n] - centerline_points[i]).normalized()
+			turn_sum += absf(d0.angle_to(d1))
+	return {
+		"outer": outer_points.duplicate(),
+		"inner": inner_points.duplicate(),
+		"start": centerline_points[0] if n > 0 else Vector2.ZERO,
+		"length_px": track_length_px,
+		"total_turn_deg": rad_to_deg(turn_sum),
+	}
 
 
 func get_track_type_label(t_type: int = -1) -> String:
