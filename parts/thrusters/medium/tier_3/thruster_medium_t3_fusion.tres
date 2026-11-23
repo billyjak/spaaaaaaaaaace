@@ -11,3 +11,6 @@ mass_kg = 26.6
 description = "Tier 3 magnetic-nozzle fusion torch drive (2,200 s Isp). High acceleration and endurance."
 specific_impulse = 2200.0
 tech_thrust_multiplier = 3.0
+overburn_thrust_multiplier = 2.0
+overburn_fuel_multiplier = 4.0
+overburn_heat_kw = 125.4

@@ -9,3 +9,7 @@ extends ShipPart
 @export var inertia_radius_m: float = 1.5
 ## Equidistant lever arm (m) from center of mass to symmetric RCS nozzles.
 @export var rcs_lever_arm_m: float = 1.8
+## Total thermal energy capacity (kJ) before reaching thermal safety redline (100% heat).
+@export var heat_capacity_kj: float = 100.0
+## Peak passive radiative cooling power (kW) at redline temperature via Stefan-Boltzmann T^4 law.
+@export var max_radiative_cooling_kw: float = 18.0

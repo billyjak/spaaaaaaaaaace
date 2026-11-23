@@ -11,3 +11,6 @@ mass_kg = 123.2
 description = "Tier 2 compact nuclear thermal rocket (850 s Isp). Higher thrust and ~2.7x exhaust velocity."
 specific_impulse = 850.0
 tech_thrust_multiplier = 1.75
+overburn_thrust_multiplier = 2.0
+overburn_fuel_multiplier = 4.0
+overburn_heat_kw = 145.0

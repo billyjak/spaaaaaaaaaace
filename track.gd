@@ -31,8 +31,8 @@ const TRACK_TYPE_COUNT: int = 4
 ## Total track width between inner and outer white lines (px).
 @export var track_width: float = 480.0
 ## Approximate spacing between sampled vertices along the smooth spline (px).
-@export var sample_spacing: float = 120.0
-## Smoothing passes for the gentle-arc camera guide rail (higher = gentler arcs through chicanes/hairpins).
+@export var sample_spacing: float = 65.0
+## Smoothing passes for the gentle-arc camera guide rail (auto-scaled with sample_spacing).
 @export_range(0, 120) var camera_rail_smoothing_passes: int = 55
 
 @export_group("Walls & Collision")
@@ -202,12 +202,14 @@ func _rebuild_camera_guides() -> void:
 	total_track_turn_rad = turn_acc
 
 	# 2. Build gentle-arc camera guide rail via circular Laplacian smoothing
+	#    Scale passes relative to sample_spacing so the physical smoothing radius stays consistent.
 	var rail: Array[Vector2] = []
 	rail.resize(n)
 	for i in n:
 		rail[i] = centerline_points[i]
 
-	var passes := maxi(camera_rail_smoothing_passes, 0)
+	var spacing_scale := pow(120.0 / maxf(sample_spacing, 30.0), 1.6)
+	var passes := clampi(int(round(float(maxi(camera_rail_smoothing_passes, 0)) * spacing_scale)), 0, 240)
 	for _pass in range(passes):
 		var next_rail: Array[Vector2] = []
 		next_rail.resize(n)
@@ -431,169 +433,277 @@ func save_current_track() -> bool:
 
 func _build_control_points_for_type(t_type: TrackType) -> Dictionary:
 	var control_pts: Array[Vector2] = []
-	var handle_divisor := 6.0
+	var handle_ratio := 0.30
 
 	match t_type:
 		TrackType.TYPE_1:
-			# Type 1 - Speedway: flowing sweepers and wide arcs
-			var n := maxi(control_point_count, 6)
-			var angle_step := TAU / float(n)
-			var min_r := maxf(base_radius * (1.0 - radial_variation), track_width * 1.6)
-			var max_r := maxf(base_radius * (1.0 + radial_variation), min_r + 100.0)
-			for i in n:
-				var angle := float(i) * angle_step + _rng.randf_range(-angular_jitter, angular_jitter) * angle_step
-				var r := _rng.randf_range(min_r, max_r)
-				control_pts.append(Vector2(cos(angle), sin(angle)) * r)
-			handle_divisor = 6.0
+			# Type 1 - Speedway: elongated asymmetric hull + 2-3 gentle sweeping edge pushes
+			var aspect := _rng.randf_range(1.28, 1.75)
+			var w := base_radius * 2.35 * sqrt(aspect)
+			var h := base_radius * 2.35 / sqrt(aspect)
+			var hull := _build_convex_hull_base(w, h, 18, 1500.0)
+			control_pts = _carve_track_edges(hull, 0, 1, 2, 1300.0)
+			control_pts = _relax_control_points(control_pts, 1350.0, 8)
+			handle_ratio = 0.33
 
 		TrackType.TYPE_2:
-			# Type 2 - Circuit: deliberate long straights slamming into sharp hairpins
-			var n := 16
-			var r_base := base_radius * 1.15
-			var phase := _rng.randi_range(0, n - 1)
-			var weights: Array[float] = []
-			var roles: Array[int] = [] # 0 = normal, 1 = straight, 2 = hairpin
-			weights.resize(n)
-			roles.resize(n)
-			for i in n:
-				var slot := (i + phase) % n
-				if slot == 0 or slot == 1 or slot == 8 or slot == 9:
-					roles[i] = 1
-					weights[i] = 1.28
-				elif slot == 2 or slot == 3 or slot == 4 or slot == 10 or slot == 11 or slot == 12:
-					roles[i] = 2
-					weights[i] = 0.84
-				else:
-					roles[i] = 0
-					weights[i] = 0.96
-
-			var angles := _angles_from_weights(weights, 0.10)
-			var side := 1.0 if _rng.randf() >= 0.5 else -1.0
-			for i in n:
-				var r := r_base
-				if roles[i] == 1:
-					# Straightaway chord: mild radius near base_radius
-					r = r_base * _rng.randf_range(0.95, 1.06)
-				elif roles[i] == 2:
-					# Hairpin cluster: strong alternating inner/outer swings with safe inner clearance
-					side = -side
-					if side > 0.0:
-						r = r_base * _rng.randf_range(1.26, 1.48)
-					else:
-						r = maxf(r_base * _rng.randf_range(0.56, 0.68), track_width * 2.4)
-				else:
-					if _rng.randf() < 0.65:
-						side = -side
-					r = r_base * (_rng.randf_range(1.10, 1.30) if side > 0.0 else _rng.randf_range(0.68, 0.86))
-				control_pts.append(Vector2(cos(angles[i]), sin(angles[i])) * r)
-
-			# Flatten the middle pegs of each straightaway onto the chord for a crisp straight
-			for start_slot: int in [0, 8]:
-				var idx_a: int = (start_slot - phase + n) % n
-				var idx_b: int = (idx_a + 1) % n
-				var idx_prev: int = (idx_a - 1 + n) % n
-				var idx_next: int = (idx_b + 1) % n
-				control_pts[idx_a] = control_pts[idx_a].lerp(control_pts[idx_prev].lerp(control_pts[idx_next], 0.35), 0.55)
-				control_pts[idx_b] = control_pts[idx_b].lerp(control_pts[idx_prev].lerp(control_pts[idx_next], 0.65), 0.55)
-			handle_divisor = 6.8
+			# Type 2 - Circuit: real GP layout — 1-2 intact long straights, 2 sharp hairpin pockets, 1-2 S-chicanes
+			var aspect := _rng.randf_range(1.30, 1.85)
+			var w := base_radius * 2.65 * sqrt(aspect)
+			var h := base_radius * 2.65 / sqrt(aspect)
+			var hull := _build_convex_hull_base(w, h, 20, 1600.0)
+			control_pts = _carve_track_edges(hull, 2, 2, 1, 1200.0, true)
+			control_pts = _relax_control_points(control_pts, 1180.0, 10)
+			handle_ratio = 0.27
 
 		TrackType.TYPE_3:
-			# Type 3 - Technical: frequent sharp hairpins & chained turn-after-turn sectors
-			var n := 18
-			var r_base := base_radius * 1.18
-			var phase := _rng.randi_range(0, n - 1)
-			var weights: Array[float] = []
-			var in_cluster: Array[bool] = []
-			weights.resize(n)
-			in_cluster.resize(n)
-			for i in n:
-				var slot := (i + phase) % n
-				var clustered := (slot >= 1 and slot <= 5) or (slot >= 10 and slot <= 14)
-				in_cluster[i] = clustered
-				weights[i] = 0.85 if clustered else 1.18
-
-			var angles := _angles_from_weights(weights, 0.10)
-			var side := 1.0 if _rng.randf() >= 0.5 else -1.0
-			for i in n:
-				if in_cluster[i]:
-					# Strict alternating tight hairpin chain
-					side = -side
-					var r := (
-						r_base * _rng.randf_range(1.18, 1.40)
-						if side > 0.0
-						else maxf(r_base * _rng.randf_range(0.56, 0.70), track_width * 2.5)
-					)
-					control_pts.append(Vector2(cos(angles[i]), sin(angles[i])) * r)
-				else:
-					if _rng.randf() < 0.78:
-						side = -side
-					var r := (
-						r_base * _rng.randf_range(1.12, 1.34)
-						if side > 0.0
-						else maxf(r_base * _rng.randf_range(0.62, 0.78), track_width * 2.5)
-					)
-					control_pts.append(Vector2(cos(angles[i]), sin(angles[i])) * r)
-			handle_divisor = 7.4
+			# Type 3 - Technical: multiple 3-turn Esses/chicanes + sharp hairpins, minimal straights
+			var aspect := _rng.randf_range(1.25, 1.80)
+			var w := base_radius * 3.05 * sqrt(aspect)
+			var h := base_radius * 3.05 / sqrt(aspect)
+			var hull := _build_convex_hull_base(w, h, 22, 1600.0)
+			control_pts = _carve_track_edges(hull, 3, 3, 1, 1300.0, false, 3, 0.95)
+			control_pts = _relax_control_points(control_pts, 1140.0, 14)
+			handle_ratio = 0.24
 
 		TrackType.TYPE_4:
-			# Type 4 - Switchback: relentless deep hairpins and back-to-back tight turns
-			var n := 22
-			var r_base := base_radius * 1.32
-			var phase := _rng.randi_range(0, n - 1)
-			var weights: Array[float] = []
-			weights.resize(n)
-			for i in n:
-				var slot := (i + phase) % n
-				# Compressed switchback chains around the loop
-				var tight_chain := (slot % 7) < 5
-				weights[i] = 0.88 if tight_chain else 1.22
-
-			var angles := _angles_from_weights(weights, 0.09)
-			var side := 1.0 if _rng.randf() >= 0.5 else -1.0
-			for i in n:
-				side = -side
-				var r := (
-					r_base * _rng.randf_range(1.20, 1.42)
-					if side > 0.0
-					else maxf(r_base * _rng.randf_range(0.58, 0.70), track_width * 2.8)
-				)
-				control_pts.append(Vector2(cos(angles[i]), sin(angles[i])) * r)
-			handle_divisor = 8.0
+			# Type 4 - Switchback: asymmetric hull with relentless hairpins & chained Esses on every side
+			var aspect := _rng.randf_range(1.25, 1.85)
+			var w := base_radius * 3.55 * sqrt(aspect)
+			var h := base_radius * 3.55 / sqrt(aspect)
+			var hull := _build_convex_hull_base(w, h, 26, 1750.0)
+			control_pts = _carve_track_edges(hull, 5, 5, 2, 1450.0, false, 4, 0.96)
+			control_pts = _relax_control_points(control_pts, 1200.0, 16)
+			handle_ratio = 0.24
 
 	return {
 		"points": control_pts,
-		"handle_divisor": handle_divisor,
+		"handle_ratio": handle_ratio,
 	}
 
 
-func _angles_from_weights(weights: Array[float], jitter_frac: float) -> PackedFloat32Array:
-	var n := weights.size()
-	var total := 0.0
-	for w in weights:
-		total += maxf(w, 0.1)
-	var angles := PackedFloat32Array()
-	angles.resize(n)
-	var acc := 0.0
+func _build_convex_hull_base(width_px: float, height_px: float, scatter_count: int, min_edge_px: float) -> Array[Vector2]:
+	var rot := _rng.randf_range(0.0, TAU)
+	var cos_r := cos(rot)
+	var sin_r := sin(rot)
+	var raw := PackedVector2Array()
+
+	for _i in range(scatter_count):
+		# Uniform scatter inside an ellipse so hull corners are varied and organic
+		var theta := _rng.randf_range(0.0, TAU)
+		var rad := sqrt(_rng.randf_range(0.15, 1.0))
+		var lx := cos(theta) * rad * width_px * 0.5
+		var ly := sin(theta) * rad * height_px * 0.5
+		raw.append(Vector2(lx * cos_r - ly * sin_r, lx * sin_r + ly * cos_r))
+
+	var hull_packed := Geometry2D.convex_hull(raw)
+	var pts: Array[Vector2] = []
+	for p in hull_packed:
+		pts.append(p)
+	if pts.size() > 1 and pts[0].is_equal_approx(pts[pts.size() - 1]):
+		pts.pop_back()
+
+	# Merge overly short hull edges so the silhouette starts bold and clean
+	var merged := true
+	while merged and pts.size() > 5:
+		merged = false
+		for i in pts.size():
+			var next_i := (i + 1) % pts.size()
+			if pts[i].distance_to(pts[next_i]) < min_edge_px:
+				pts[i] = (pts[i] + pts[next_i]) * 0.5
+				pts.remove_at(next_i)
+				merged = true
+				break
+
+	# Re-center around origin
+	if not pts.is_empty():
+		var centroid := Vector2.ZERO
+		for p in pts:
+			centroid += p
+		centroid /= float(pts.size())
+		for i in pts.size():
+			pts[i] -= centroid
+
+	return pts
+
+
+## Carves race-track features perpendicular to existing edges of `poly`:
+## - `hairpin_count`: deep U/V hairpin pockets carved perpendicular to long edges
+## - `esses_count`: alternating left-right S-bend / Esses complexes along edges
+## - `sweeper_count`: gentle single-midpoint corner bends
+## - `keep_longest_straight`: preserves the single longest edge intact as a fast straightaway
+func _carve_track_edges(
+	poly: Array[Vector2],
+	hairpin_count: int,
+	esses_count: int,
+	sweeper_count: int,
+	min_carve_len: float,
+	keep_longest_straight: bool = false,
+	esses_turns: int = 2,
+	depth_scale: float = 1.0
+) -> Array[Vector2]:
+	var n := poly.size()
+	if n < 3:
+		return poly
+
+	var signed_area := _compute_signed_area(poly)
+	# Consistent inward normal for each edge (a -> b)
+	var inward_sign := -1.0 if signed_area >= 0.0 else 1.0
+
+	# Rank edges by length (longest first)
+	var edge_indices: Array[int] = []
+	var edge_lengths: Array[float] = []
+	edge_lengths.resize(n)
 	for i in n:
-		var step := (maxf(weights[i], 0.1) / maxf(total, 0.001)) * TAU
-		var jitter := _rng.randf_range(-jitter_frac, jitter_frac) * step
-		angles[i] = acc + jitter
-		acc += step
-	return angles
+		edge_indices.append(i)
+		edge_lengths[i] = poly[i].distance_to(poly[(i + 1) % n])
+
+	edge_indices.sort_custom(func(a: int, b: int) -> bool: return edge_lengths[a] > edge_lengths[b])
+
+	# Assign feature roles per edge: 0 = intact straight, 1 = hairpin pocket, 2 = esses/chicane, 3 = sweeper
+	var edge_roles: Array[int] = []
+	edge_roles.resize(n)
+	edge_roles.fill(0)
+
+	var cursor := 0
+	if keep_longest_straight and edge_indices.size() > 3:
+		# Reserve the single longest edge as an unmistakable flip-and-burn straightaway
+		cursor = 1
+
+	var rem_hairpins := hairpin_count
+	var rem_esses := esses_count
+	var rem_sweepers := sweeper_count
+
+	# Shuffle candidate order slightly among qualifying long edges for organic variety
+	var candidates: Array[int] = []
+	for k in range(cursor, edge_indices.size()):
+		var ei := edge_indices[k]
+		if edge_lengths[ei] >= min_carve_len:
+			candidates.append(ei)
+
+	# Assign hairpins & esses to the longest qualifying edges first, then sweepers
+	for ei in candidates:
+		if rem_hairpins > 0 and rem_esses > 0:
+			if _rng.randf() < 0.5:
+				edge_roles[ei] = 1
+				rem_hairpins -= 1
+			else:
+				edge_roles[ei] = 2
+				rem_esses -= 1
+		elif rem_hairpins > 0:
+			edge_roles[ei] = 1
+			rem_hairpins -= 1
+		elif rem_esses > 0:
+			edge_roles[ei] = 2
+			rem_esses -= 1
+		elif rem_sweepers > 0:
+			edge_roles[ei] = 3
+			rem_sweepers -= 1
+
+	var out: Array[Vector2] = []
+	for i in n:
+		var a := poly[i]
+		var b := poly[(i + 1) % n]
+		out.append(a)
+
+		var role := edge_roles[i]
+		if role == 0:
+			continue
+
+		var seg := b - a
+		var seg_len := seg.length()
+		if seg_len < min_carve_len:
+			continue
+		var dir := seg / seg_len
+		var inward_n := Vector2(dir.y, -dir.x) * inward_sign
+
+		if role == 1:
+			# Hairpin Pocket: entry shoulder -> deep perpendicular apex -> exit shoulder
+			# Bias inward (70%) so pockets carve cleanly into the circuit silhouette
+			var side := 1.0 if _rng.randf() < 0.70 else -1.0
+			var max_safe_depth := minf(seg_len * 0.48, 2600.0)
+			var depth := clampf(seg_len * _rng.randf_range(0.34, 0.46) * depth_scale, minf(850.0, max_safe_depth), max_safe_depth)
+			var shoulder := depth * _rng.randf_range(0.04, 0.14) * -side
+			var t_apex := _rng.randf_range(0.44, 0.56)
+			out.append(a.lerp(b, t_apex - 0.22) + inward_n * shoulder)
+			out.append(a.lerp(b, t_apex) + inward_n * (depth * side))
+			out.append(a.lerp(b, t_apex + 0.22) + inward_n * shoulder)
+
+		elif role == 2:
+			# S-Bend / Esses Complex: alternating perpendicular bends flowing along the edge
+			var max_turns := clampi(int(floor(seg_len / 1200.0)), 2, 4)
+			var turns := mini(esses_turns, max_turns)
+			var side := 1.0 if _rng.randf() >= 0.5 else -1.0
+			var max_safe_amp := minf(seg_len * 0.30, 1850.0)
+			var amp := clampf(seg_len * _rng.randf_range(0.18, 0.27) * depth_scale, minf(680.0, max_safe_amp), max_safe_amp)
+			for k in range(turns):
+				var frac := float(k + 1) / float(turns + 1)
+				var jitter_t := _rng.randf_range(-0.025, 0.025)
+				var local_amp := amp * _rng.randf_range(0.85, 1.15)
+				out.append(a.lerp(b, clampf(frac + jitter_t, 0.14, 0.86)) + inward_n * (local_amp * side))
+				side = -side
+
+		elif role == 3:
+			# Gentle Sweeper: single perpendicular push
+			var side := 1.0 if _rng.randf() < 0.65 else -1.0
+			var max_safe_depth := minf(seg_len * 0.38, 2200.0)
+			var depth := clampf(seg_len * _rng.randf_range(0.16, 0.28) * depth_scale, minf(500.0, max_safe_depth), max_safe_depth)
+			var t_mid := _rng.randf_range(0.38, 0.62)
+			out.append(a.lerp(b, t_mid) + inward_n * (depth * side))
+
+	return out
+
+
+func _relax_control_points(pts: Array[Vector2], min_dist: float, passes: int) -> Array[Vector2]:
+	var n := pts.size()
+	if n < 4:
+		return pts
+	var work := pts.duplicate()
+	var min_seg_dist := min_dist * 0.88
+
+	for _pass in range(passes):
+		# 1. Pairwise vertex separation
+		for i in n:
+			for j in range(i + 1, n):
+				var delta: Vector2 = work[j] - work[i]
+				var d := delta.length()
+				if d < min_dist and d > 0.001:
+					var push := (delta / d) * ((min_dist - d) * 0.35)
+					work[i] -= push
+					work[j] += push
+
+		# 2. Non-adjacent vertex-to-segment clearance (prevents opposite walls pinching)
+		for i in n:
+			var p: Vector2 = work[i]
+			for j in n:
+				var j_next := (j + 1) % n
+				if i == j or i == j_next:
+					continue
+				var a: Vector2 = work[j]
+				var b: Vector2 = work[j_next]
+				var closest := Geometry2D.get_closest_point_to_segment(p, a, b)
+				var diff := p - closest
+				var d := diff.length()
+				if d < min_seg_dist and d > 0.001:
+					var push := (diff / d) * ((min_seg_dist - d) * 0.40)
+					work[i] += push
+					work[j] -= push * 0.25
+					work[j_next] -= push * 0.25
+
+	return work
 
 
 func _try_build_geometry(t_type: TrackType = TrackType.TYPE_1) -> bool:
 	# 1. Place control pegs according to active track archetype
 	var built_ctrl := _build_control_points_for_type(t_type)
 	var control_pts: Array[Vector2] = built_ctrl["points"]
-	var handle_divisor: float = built_ctrl["handle_divisor"]
+	var handle_ratio: float = built_ctrl["handle_ratio"]
 	var n := control_pts.size()
-	if n < 6:
+	if n < 5:
 		return false
 
 	# 2. Build closed Catmull-Rom spline via Curve2D with distance-clamped handles
 	#    (prevents Bezier overshoot loops on asymmetric straight-into-hairpin transitions)
-	var handle_ratio := 1.0 / maxf(handle_divisor * 0.5, 2.5) # ~0.33 (Type 1) down to ~0.25 (Type 4)
 	var curve := Curve2D.new()
 	for i in n:
 		var prev_pt := control_pts[(i - 1 + n) % n]
@@ -623,9 +733,10 @@ func _try_build_geometry(t_type: TrackType = TrackType.TYPE_1) -> bool:
 		sampled.append(curve.sample_baked(dist))
 
 	# 4. Anti-pinch curvature smoothing pass: ensure minimum bend radius > track_width * 0.80
-	#    and gently relax immediate neighbors so segment spacing stays even around tight hairpins.
+	#    Scale pass budget with sample_spacing so tight hairpins smooth cleanly at finer resolution.
 	var min_bend_radius := track_width * 0.80
-	for _pass in range(32):
+	var smooth_passes := clampi(int(round(32.0 * pow(120.0 / maxf(sample_spacing, 30.0), 1.5))), 32, 110)
+	for _pass in range(smooth_passes):
 		var any_tight := false
 		var next_sampled := sampled.duplicate()
 		for i in sample_count:
@@ -727,29 +838,59 @@ func _compute_signed_area(pts: Array[Vector2]) -> float:
 	return area * 0.5
 
 
+func _build_segment_grid(pts: PackedVector2Array, cell_size: float) -> Dictionary:
+	var grid: Dictionary = {}
+	var n := pts.size()
+	var inv := 1.0 / maxf(cell_size, 1.0)
+	for i in n:
+		var a := pts[i]
+		var b := pts[(i + 1) % n]
+		var min_cx := int(floor(minf(a.x, b.x) * inv))
+		var max_cx := int(floor(maxf(a.x, b.x) * inv))
+		var min_cy := int(floor(minf(a.y, b.y) * inv))
+		var max_cy := int(floor(maxf(a.y, b.y) * inv))
+		for cx in range(min_cx, max_cx + 1):
+			for cy in range(min_cy, max_cy + 1):
+				var key := Vector2i(cx, cy)
+				if not grid.has(key):
+					grid[key] = PackedInt32Array([i])
+				else:
+					var bucket: PackedInt32Array = grid[key]
+					bucket.append(i)
+					grid[key] = bucket
+	return grid
+
+
 func _loop_self_intersects(pts: PackedVector2Array) -> bool:
 	var n := pts.size()
 	if n < 4:
 		return false
-	for i in n:
-		var a1 := pts[i]
-		var a2 := pts[(i + 1) % n]
-		var a_min_x := minf(a1.x, a2.x)
-		var a_max_x := maxf(a1.x, a2.x)
-		var a_min_y := minf(a1.y, a2.y)
-		var a_max_y := maxf(a1.y, a2.y)
-		for j in range(i + 2, n):
-			# Skip wrap-around adjacent pair (first and last segment share vertex 0)
-			if i == 0 and j == n - 1:
-				continue
-			var b1 := pts[j]
-			var b2 := pts[(j + 1) % n]
-			if maxf(b1.x, b2.x) < a_min_x or minf(b1.x, b2.x) > a_max_x:
-				continue
-			if maxf(b1.y, b2.y) < a_min_y or minf(b1.y, b2.y) > a_max_y:
-				continue
-			if Geometry2D.segment_intersects_segment(a1, a2, b1, b2) != null:
-				return true
+	var grid := _build_segment_grid(pts, 480.0)
+	for bucket: PackedInt32Array in grid.values():
+		var m := bucket.size()
+		if m < 2:
+			continue
+		for bi in m:
+			var i := bucket[bi]
+			var a1 := pts[i]
+			var a2 := pts[(i + 1) % n]
+			var a_min_x := minf(a1.x, a2.x)
+			var a_max_x := maxf(a1.x, a2.x)
+			var a_min_y := minf(a1.y, a2.y)
+			var a_max_y := maxf(a1.y, a2.y)
+			for bj in range(bi + 1, m):
+				var j := bucket[bj]
+				var diff := absi(i - j)
+				if diff <= 1 or diff == n - 1:
+					continue
+				var b1 := pts[j]
+				var b2 := pts[(j + 1) % n]
+				if maxf(b1.x, b2.x) < a_min_x or minf(b1.x, b2.x) > a_max_x:
+					continue
+				if maxf(b1.y, b2.y) < a_min_y or minf(b1.y, b2.y) > a_max_y:
+					continue
+				if Geometry2D.segment_intersects_segment(a1, a2, b1, b2) != null:
+					return true
 	return false
 
 
@@ -758,6 +899,9 @@ func _loops_intersect(loop_a: PackedVector2Array, loop_b: PackedVector2Array) ->
 	var nb := loop_b.size()
 	if na < 2 or nb < 2:
 		return false
+	var cell_size := 480.0
+	var inv := 1.0 / cell_size
+	var grid_b := _build_segment_grid(loop_b, cell_size)
 	for i in na:
 		var a1 := loop_a[i]
 		var a2 := loop_a[(i + 1) % na]
@@ -765,15 +909,25 @@ func _loops_intersect(loop_a: PackedVector2Array, loop_b: PackedVector2Array) ->
 		var a_max_x := maxf(a1.x, a2.x)
 		var a_min_y := minf(a1.y, a2.y)
 		var a_max_y := maxf(a1.y, a2.y)
-		for j in nb:
-			var b1 := loop_b[j]
-			var b2 := loop_b[(j + 1) % nb]
-			if maxf(b1.x, b2.x) < a_min_x or minf(b1.x, b2.x) > a_max_x:
-				continue
-			if maxf(b1.y, b2.y) < a_min_y or minf(b1.y, b2.y) > a_max_y:
-				continue
-			if Geometry2D.segment_intersects_segment(a1, a2, b1, b2) != null:
-				return true
+		var min_cx := int(floor(a_min_x * inv))
+		var max_cx := int(floor(a_max_x * inv))
+		var min_cy := int(floor(a_min_y * inv))
+		var max_cy := int(floor(a_max_y * inv))
+		for cx in range(min_cx, max_cx + 1):
+			for cy in range(min_cy, max_cy + 1):
+				var key := Vector2i(cx, cy)
+				if not grid_b.has(key):
+					continue
+				var bucket: PackedInt32Array = grid_b[key]
+				for j in bucket:
+					var b1 := loop_b[j]
+					var b2 := loop_b[(j + 1) % nb]
+					if maxf(b1.x, b2.x) < a_min_x or minf(b1.x, b2.x) > a_max_x:
+						continue
+					if maxf(b1.y, b2.y) < a_min_y or minf(b1.y, b2.y) > a_max_y:
+						continue
+					if Geometry2D.segment_intersects_segment(a1, a2, b1, b2) != null:
+						return true
 	return false
 
 

@@ -5,7 +5,8 @@
 [ext_resource type="Texture2D" uid="uid://b726et0wsydls" path="res://resources/milky_way/milky-way-3.jpg" id="3_0b4ue"]
 [ext_resource type="Script" uid="uid://b78r4wuxgo84d" path="res://background_objects.gd" id="4_bgobj"]
 [ext_resource type="Script" uid="uid://c0qe7n66hgw0n" path="res://minimap.gd" id="5_minimap"]
-[ext_resource type="Script" path="res://ship_camera.gd" id="6_shipcam"]
+[ext_resource type="Script" uid="uid://bpxl3nupr7eaa" path="res://ship_camera.gd" id="6_shipcam"]
+[ext_resource type="Script" uid="uid://bfc7dcgjgu5fn" path="res://heat_gauge.gd" id="7_heatgauge"]
 [ext_resource type="Script" uid="uid://b3pdsm7vex8u1" path="res://track.gd" id="10_8cye3"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_telemetry"]
@@ -84,6 +85,24 @@ theme_override_styles/panel = SubResource("StyleBoxFlat_telemetry")
 [node name="Minimap" type="Control" parent="PlayerShip/TelemetryLayer/MinimapPanel" unique_id=1928374654]
 layout_mode = 2
 script = ExtResource("5_minimap")
+
+[node name="HeatGaugePanel" type="PanelContainer" parent="PlayerShip/TelemetryLayer" unique_id=1928374655]
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -200.0
+offset_top = -68.0
+offset_right = 200.0
+offset_bottom = -20.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_telemetry")
+
+[node name="HeatGauge" type="Control" parent="PlayerShip/TelemetryLayer/HeatGaugePanel" unique_id=1928374656]
+layout_mode = 2
+script = ExtResource("7_heatgauge")
 
 [node name="BackgroundObjects" type="Node2D" parent="." unique_id=1089561932]
 script = ExtResource("4_bgobj")

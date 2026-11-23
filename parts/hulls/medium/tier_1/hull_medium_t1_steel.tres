@@ -1,16 +1,13 @@
-[gd_resource type="Resource" script_class="HullPart" format=3]
+[gd_resource type="Resource" script_class="HullPart" format=3 uid="uid://b8irgkpreylg8"]
 
-[ext_resource type="Script" path="res://parts/hull_part.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://bf6npxdu2t8rh" path="res://parts/hull_part.gd" id="1_script"]
 [ext_resource type="PackedScene" uid="uid://ckg1vnm730fyl" path="res://hull_medium.tscn" id="2_scene"]
 
 [resource]
 script = ExtResource("1_script")
+hull_scene = ExtResource("2_scene")
+heat_capacity_kj = 165.0
+max_radiative_cooling_kw = 29.7
 part_name = "Vector Steel Frame"
-tech_tier = 1
-size_class = 1
 mass_kg = 120.0
 description = "Tier 1 budget orbital alloy airframe."
-hull_scene = ExtResource("2_scene")
-fuel_capacity_kg = 250.0
-inertia_radius_m = 1.5
-rcs_lever_arm_m = 1.8

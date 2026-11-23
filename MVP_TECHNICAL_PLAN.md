@@ -3,19 +3,43 @@
 ## 0. Current Progress & Next Session Queue
 
 ### Completed So Far
-* **Modular Part Resource System (`parts/ship_part.gd`, `hull_part.gd`, `thruster_part.gd`, `rcs_part.gd`, `ship_data.gd`):**
-  * Ships are now composed of swappable `Resource` pointers (`HullPart`, `ThrusterPart`, `RCSPart`, `aux_parts`) with `SizeClass` compatibility (`SMALL`, `MEDIUM`, `LARGE`, `UNIVERSAL`).
-  * Starter NASA-era chemical loadouts (`ship_small/medium/large.tres`) + high-tech test parts (`hull_medium_carbon.tres`, `thruster_medium_ntr.tres`, `thruster_medium_fusion.tres`, `rcs_medium_plasma.tres`) ready for instant drag-and-drop testing in the Godot Inspector.
+* **Modular Part Resource System & 36-Part 4-Tier Catalog (`parts/ship_part.gd`, `hull_part.gd`, `thruster_part.gd`, `rcs_part.gd`, `ship_data.gd`):**
+  * Ships are composed of swappable `Resource` pointers (`HullPart`, `ThrusterPart`, `RCSPart`, `aux_parts`) with `SizeClass` compatibility (`SMALL`, `MEDIUM`, `LARGE`, `UNIVERSAL`).
+  * Full 36-part catalog across `Small`, `Medium`, and `Large` classes and Tech Tiers `T1–T4` (`Steel → Titanium → Carbon → Exotic` hulls; `Chemical → NTR → Fusion Torch → Exotic` engines; `Hydrazine → Resistojet → Plasma → Exotic` RCS) with live D-pad hot-swapping.
 * **SI Component Mass, Inertia & Unified Fuel Physics (`player_ship.gd`):**
   * Total `mass` and uniform `inertia` (`I = Σ m · r²`) derived dynamically from installed `ShipPart` masses + shared `fuel_mass` tank (updating live every physics tick as propellant burns).
   * Square-cube scaling (`2/3` exponent × part `tech_thrust_multiplier`) for **both** main thrusters and symmetric RCS nozzles (equidistant at `hull.rcs_lever_arm_m`).
   * Shared propellant tank (`fuel_mass`) feeding both main engine (`thruster.specific_impulse`) and RCS nozzles (`rcs.specific_impulse`), refilled via `reset_fuel`.
-  * Live top-left telemetry HUD (`TelemetryLayer`) showing Ship Name, Installed Parts & `I_sp`, Fuel, Mass, Inertia, Turn Rate, Derived RCS Torque, Max Thrust/G, Burn Rates, Accel, and Speed.
+  * Live top-left telemetry HUD (`TelemetryLayer`) showing Ship Name, Installed Parts `[T1–T4]` & `I_sp`, Fuel, Mass, Inertia, Turn Rate, Derived RCS Torque, Max Thrust/G, Burn Rates, Accel, Speed, and Track Type/Seed.
 * **RCS Pulse-Clamping, Valve Timing & Deadband (`player_ship.gd`):**
-  * Fixed the 2-frame bang-bang overshoot ghost-spin bug using PWM final-tick pulse clamping.
+  * Fixed the 2-frame bang-bang overshoot ghost-spin bug using time-optimal phase-plane aiming + PWM final-tick pulse clamping.
   * Added per-nozzle minimum valve on/off timers (`0.08 s` / `0.08 s`) for crisp boolean RCS plumes and a `0.025 rad` (`1.4°`) stick-aim deadband to stop analog stick noise from wasting fuel.
 * **3 Swappable Ship Hulls (`hull_small/medium/large.tscn`):**
-  * Visually fitted `HullCollision` reparented onto `PlayerShip`, per-hull exhaust base scaling, and live hot-swapping (`swap_ship_small`, `swap_ship_medium`, `swap_ship_large`).
+  * Visually fitted `HullCollision` reparented onto `PlayerShip`, per-hull exhaust base scaling, and live D-pad size/tier cycling.
+* **True-Perspective Continuous-Depth Space Background (`background_objects.gd`):**
+  * Continuous 3D distance `Z` (`2.2..110`) with toroidal wrapping, Gaussian bell-curve AntuZ meteors with size-limited structural spin (`1 / R`), Kenney X2 stations, colossal deep-space anchors (`xl` meteors & `017`/`026` megastations), and exact 3D camera-altitude projection (eliminating 2D dolly-zoom warp).
+* **4-Tier Procedural Track Generator, Minimap & Course-Sightline Camera (`track.gd`, `minimap.gd`, `ship_camera.gd`):**
+  * Asymmetric Convex Hull + Perpendicular Edge Carving generator with 4 escalating track types (`Type 1 - Speedway`, `Type 2 - Circuit`, `Type 3 - Technical`, `Type 4 - Switchback`), cycled via `new_track` (`N`) and saved with type & seed via `save_track` (`S`) to `user://saved_tracks.json`.
+  * Top-right corner minimap (`minimap.gd`) showing track walls, start marker, and live ship chevron (flip-and-burn projection kept in code, toggled off by default).
+  * 3-zone honest course-sightline camera (`ship_camera.gd`) following a heavily smoothed gentle-arc camera rail with a critically damped spring (`close_zoom = 1.50` in tight turns, `default_zoom = 1.15` normal, `wide_zoom = 0.85` on major straights).
+
+### Thermal System & Overburn Propulsion (Implemented MVP + Post-MVP Balance Plan)
+* **Overburn (Emergency Thrust Augmentation — Implemented):**
+  * Triggered via dedicated `overburn` bind: fires the main engine at **full throttle × `200%` thrust (`2.0×`)** at the cost of **`400%` fuel consumption (`4.0×`)** (effectively halving `I_sp` like real-world propellant-injected thrust augmentation) and heavy thermal buildup.
+  * Solves zero-G braking emergencies without fake arcade brakes: lets pilots burn extra fuel and thermal headroom to save a missed braking point or launch hard out of a hairpin.
+* **Ship Thermal Pool, Stefan-Boltzmann Radiation & Safety Interlock (Implemented):**
+  * Engine adds `overburn_heat_kw` while overburning; hull radiates heat continuously via exact **Stefan-Boltzmann `T⁴` cooling** (`300 K → 650 K`, so hot hulls radiate dramatically faster than cool hulls, rewarding redline management).
+  * **Default Safety Interlock:** At `100%` heat, the engine's onboard thermal safety cuts off **Overburn only** until heat drops below `25%`, while normal `100%` main thrust remains usable.
+  * **Future Safety-Disabled / Jailbroken Engines:** Specialized high-risk engines or manufacturer mods can disable the thermal safety interlock, allowing pilots to push past `100%` heat for desperate saves at the risk of **permanently burning out the engine** (forcing deployment of the next RC drone stock in the race).
+* **Part Stat Ownership & Post-MVP Cooling Rebalance:**
+  * **Heat Generation (`ThrusterPart`):** Each engine defines `overburn_heat_kw` (scaling up across Chemical → NTR → Fusion → Exotic), allowing cool-running vs. hot-running engine perks across tiers and manufacturers.
+  * **Baseline Passive Cooling (`HullPart`):** Single-part baseline cooling (`max_radiative_cooling_kw`, `heat_capacity_kj`) lives on the **Hull**, scaling with material tier (`Steel → Titanium → Carbon → Exotic`) and hull size.
+  * **MVP vs. Post-MVP Rebalance Note:** Current bare-hull passive cooling is intentionally tuned to be comfortable and self-sufficient for the MVP (before auxiliary modules exist). Once auxiliary cooling parts and lasers are introduced, **bare-hull passive cooling should be nerfed significantly** so that vacuum behaves like a true thermos — making current-level heat management achievable *only* by investing mass into a dedicated cooling system (creating a genuine ultralight "naked" vs. actively/passively cooled build trade-off).
+  * **Future Auxiliary Heat Sinks (`AuxPart` / `DefensePart` — Two Distinct Archetypes):**
+    * **Passive Radiators:** Add dry mass to permanently boost `max_radiative_cooling_kw` (strong against sustained heat and enemy Lasers).
+    * **Active Expendable Heat Sinks (Thermal Slug Ejectors):** Carry a magazine of solid high-heat-capacity blocks/slugs (scaling from basic metals up to exotic sci-fi thermal-storage materials). Triggering one rapidly dumps a large burst of ship heat into a slug and **ejects the superheated slug into space**, instantly cooling the ship **and shedding the slug's real mass** (lowering ship mass & inertia mid-race).
+* **Thermal HUD Gauge (Implemented):**
+  * GUI-movable/resizable bottom-center heat gauge (`heat_gauge.gd`) that fills `0% → 100%`, shifting smoothly **yellow → orange → red**, with a `25%` safety-recovery tick and crimson pulse during lockout.
 
 ### Post-MVP Stretch Goals (Generational Space-Racing Roguelite)
 * **Generational Family Bloodline & Career Circuit:**

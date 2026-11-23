@@ -77,7 +77,25 @@ const MIN_INERTIA := 0.01
 ## Fraction of derived RCS torque required to trigger a visual puff (filters stick micro-jitter).
 @export var rcs_visual_torque_threshold: float = 0.05
 
+# ---------------------------------------------------------------------------
+# Overburn & Stefan-Boltzmann Thermal Physics
+# ---------------------------------------------------------------------------
+@export_group("Overburn & Thermal Physics")
+## Cold equilibrium hull temperature (K) at 0% heat (300 K = ~27 C).
+@export var ambient_temp_k: float = 300.0
+## Thermal safety redline temperature (K) at 100% heat (650 K = ~377 C).
+@export var redline_temp_k: float = 650.0
+## Heat fraction below which the thermal safety interlock re-enables Overburn after hitting 100%.
+@export_range(0.1, 0.9, 0.05) var overheat_recovery_fraction: float = 0.25
+
 var rotational_stabilize := true
+var current_heat_kj: float = 0.0
+var heat_capacity_kj: float = 100.0
+var overburn_locked_out: bool = false
+var is_overburning: bool = false
+var _current_heating_kw: float = 0.0
+var _current_cooling_kw: float = 0.0
+var _current_max_cooling_kw: float = 18.0
 
 const SIZE_KEYS: PackedStringArray = ["small", "medium", "large"]
 const HULL_TIER_SLUGS: PackedStringArray = ["steel", "titanium", "carbon", "exotic"]
@@ -340,8 +358,32 @@ func place_at_spawn(world_pos: Vector2, world_rot: float, refill_fuel: bool = tr
 	PhysicsServer2D.body_set_state(get_rid(), PhysicsServer2D.BODY_STATE_ANGULAR_VELOCITY, 0.0)
 	if refill_fuel:
 		fuel_mass = _initial_fuel_mass
+		current_heat_kj = 0.0
+		overburn_locked_out = false
+		is_overburning = false
 		_recalculate_mass_and_inertia()
 	_update_telemetry()
+
+
+func get_heat_fraction() -> float:
+	if heat_capacity_kj <= 0.001:
+		return 0.0
+	return clampf(current_heat_kj / heat_capacity_kj, 0.0, 1.0)
+
+
+func get_hull_temp_k() -> float:
+	return lerpf(ambient_temp_k, redline_temp_k, get_heat_fraction())
+
+
+func _compute_radiative_cooling_kw(heat_frac: float) -> float:
+	var h := clampf(heat_frac, 0.0, 1.0)
+	var t_amb := maxf(ambient_temp_k, 1.0)
+	var t_max := maxf(redline_temp_k, t_amb + 1.0)
+	var t_cur := lerpf(t_amb, t_max, h)
+	var t_amb4 := pow(t_amb, 4.0)
+	var t_max4 := pow(t_max, 4.0)
+	var rad_factor := clampf((pow(t_cur, 4.0) - t_amb4) / maxf(t_max4 - t_amb4, 1.0), 0.0, 1.0)
+	return _current_max_cooling_kw * rad_factor
 
 
 func _rebuild_hull_visuals() -> void:
@@ -513,6 +555,14 @@ func _recalculate_propulsion() -> void:
 	_current_rcs_torque = 2.0 * _current_rcs_nozzle_thrust_n * lever_arm
 	_current_rcs_linear_force = 2.0 * _current_rcs_nozzle_thrust_n
 
+	if installed_hull != null:
+		heat_capacity_kj = maxf(installed_hull.heat_capacity_kj, 1.0)
+		_current_max_cooling_kw = maxf(installed_hull.max_radiative_cooling_kw, 0.0)
+	else:
+		heat_capacity_kj = 100.0
+		_current_max_cooling_kw = 18.0
+	current_heat_kj = clampf(current_heat_kj, 0.0, heat_capacity_kj)
+
 
 func _physics_process(delta: float) -> void:
 	if InputMap.has_action("cycle_ship_size") and Input.is_action_just_pressed("cycle_ship_size"):
@@ -533,6 +583,9 @@ func _physics_process(delta: float) -> void:
 
 	if Input.is_action_just_pressed("reset_fuel"):
 		fuel_mass = _initial_fuel_mass
+		current_heat_kj = 0.0
+		overburn_locked_out = false
+		is_overburning = false
 
 	if Input.is_action_just_pressed("toggle_rotational_stabilization"):
 		rotational_stabilize = not rotational_stabilize
@@ -546,6 +599,7 @@ func _physics_process(delta: float) -> void:
 	_recalculate_propulsion()
 
 	var main_throttle := 0.0
+	var overburn_active := false
 	var desired_rcs_torque := 0.0
 	var desired_rcs_linear_n := 0.0
 	var desired_rcs_linear_dir_world := Vector2.ZERO
@@ -554,6 +608,16 @@ func _physics_process(delta: float) -> void:
 	var trigger := Input.get_action_strength("boost")
 	if trigger > 0.05:
 		main_throttle = maxf(main_throttle, trigger)
+
+	# Dedicated Overburn bind: fires full throttle at 200% thrust / 400% fuel burn
+	# while allowed by the thermal safety interlock.
+	var overburn_pressed := (
+		(InputMap.has_action("overburn") and Input.is_action_pressed("overburn"))
+		or (InputMap.has_action(" overburn") and Input.is_action_pressed(" overburn"))
+	)
+	if overburn_pressed and not overburn_locked_out and fuel_mass > 0.0 and _current_max_thrust_n > 0.0:
+		overburn_active = true
+		main_throttle = 1.0
 
 	# Stick aim (draws from shared fuel_mass)
 	var stick := Vector2(
@@ -625,7 +689,19 @@ func _physics_process(delta: float) -> void:
 	var active_throttle := 0.0
 
 	var clamped_throttle := clampf(main_throttle, 0.0, 1.0)
-	var desired_main_thrust_n := (_current_max_thrust_n * clamped_throttle) if (clamped_throttle > 0.0 and _current_max_thrust_n > 0.0) else 0.0
+	var ob_thrust_mult := (
+		installed_thruster.overburn_thrust_multiplier
+		if (overburn_active and installed_thruster != null)
+		else (2.0 if overburn_active else 1.0)
+	)
+	var ob_fuel_mult := (
+		installed_thruster.overburn_fuel_multiplier
+		if (overburn_active and installed_thruster != null)
+		else (4.0 if overburn_active else 1.0)
+	)
+
+	var base_main_thrust_n := (_current_max_thrust_n * clamped_throttle) if (clamped_throttle > 0.0 and _current_max_thrust_n > 0.0) else 0.0
+	var desired_main_thrust_n := base_main_thrust_n * ob_thrust_mult
 	var lever_arm := _get_rcs_lever_arm_m()
 	var rotational_rcs_thrust_n := (absf(desired_rcs_torque) / lever_arm) if lever_arm > 0.0 else 0.0
 	var total_desired_rcs_thrust_n := rotational_rcs_thrust_n + desired_rcs_linear_n
@@ -635,10 +711,11 @@ func _physics_process(delta: float) -> void:
 	var main_exhaust_v := maxf(main_isp * STANDARD_GRAVITY, 0.01)
 	var rcs_exhaust_v := maxf(rcs_isp * STANDARD_GRAVITY, 0.01)
 
-	var desired_main_burn_rate := desired_main_thrust_n / main_exhaust_v
+	var desired_main_burn_rate := (base_main_thrust_n / main_exhaust_v) * ob_fuel_mult
 	var desired_rcs_burn_rate := total_desired_rcs_thrust_n / rcs_exhaust_v
 	var total_fuel_needed := (desired_main_burn_rate + desired_rcs_burn_rate) * delta
 
+	var overburn_burn_fraction := 0.0
 	if total_fuel_needed > 0.0 and fuel_mass > 0.0 and delta > 0.0:
 		var burn_fraction := 1.0
 		if total_fuel_needed > fuel_mass:
@@ -660,26 +737,44 @@ func _physics_process(delta: float) -> void:
 			_current_applied_thrust_n = desired_main_thrust_n * burn_fraction
 			_current_fuel_burn_rate = desired_main_burn_rate * burn_fraction
 			active_throttle = clamped_throttle * burn_fraction
+			if overburn_active:
+				overburn_burn_fraction = burn_fraction
 			var forward := Vector2.UP.rotated(rotation)
 			apply_central_force(forward * _current_applied_thrust_n * pixels_per_meter)
 
 		# Immediately reflect burned fuel in mass & inertia for this frame's telemetry
 		_recalculate_mass_and_inertia()
 
-	_update_exhaust_visual(active_throttle)
+	# Continuous Stefan-Boltzmann radiative cooling + Overburn heat input
+	is_overburning = overburn_active and overburn_burn_fraction > 0.01
+	var engine_ob_heat_kw := installed_thruster.overburn_heat_kw if installed_thruster != null else 44.0
+	_current_heating_kw = engine_ob_heat_kw * overburn_burn_fraction if is_overburning else 0.0
+	_current_cooling_kw = _compute_radiative_cooling_kw(get_heat_fraction())
+	current_heat_kj = clampf(current_heat_kj + (_current_heating_kw - _current_cooling_kw) * delta, 0.0, heat_capacity_kj)
+
+	# In-universe thermal safety interlock: cuts off Overburn at 100% until cooled below recovery threshold
+	if current_heat_kj >= heat_capacity_kj - 0.001:
+		overburn_locked_out = true
+	elif overburn_locked_out and get_heat_fraction() <= overheat_recovery_fraction:
+		overburn_locked_out = false
+
+	_update_exhaust_visual(active_throttle, is_overburning)
 	_update_rcs_visuals(applied_rcs_torque, applied_rcs_linear_dir_world, delta)
 	_update_telemetry()
 
 
-func _update_exhaust_visual(throttle: float) -> void:
+func _update_exhaust_visual(throttle: float, overburning: bool = false) -> void:
 	if _exhaust_sprite == null:
 		return
 	_exhaust_sprite.visible = throttle > 0.01
 	if _exhaust_sprite.visible:
+		var width_mult := 1.28 if overburning else 1.0
+		var len_mult := lerpf(0.35, 1.25, throttle) * (1.55 if overburning else 1.0)
 		_exhaust_sprite.scale = Vector2(
-			_exhaust_base_scale.x,
-			_exhaust_base_scale.y * lerpf(0.35, 1.25, throttle)
+			_exhaust_base_scale.x * width_mult,
+			_exhaust_base_scale.y * len_mult
 		)
+		_exhaust_sprite.modulate = Color(1.35, 1.45, 1.65, 1.0) if overburning else Color.WHITE
 
 
 func _step_rcs_valve(nozzle_key: String, desired_on: bool, delta: float) -> bool:
@@ -782,11 +877,20 @@ func _update_telemetry() -> void:
 		var type_prefix := ("[%s] " % type_str) if not type_str.is_empty() else ""
 		track_line = "\nTRACK: %s#%d%s" % [type_prefix, int(_track.active_seed), suffix]
 
+	var heat_pct := get_heat_fraction() * 100.0
+	var hull_temp_k := get_hull_temp_k()
+	var heat_tag := ""
+	if overburn_locked_out:
+		heat_tag = " [OVERHEAT LOCKOUT]"
+	elif is_overburning:
+		heat_tag = " [OVERBURN]"
+
 	_telemetry_label.text = (
 		"SHIP: %s\n"
 		+ "HULL: %s\n"
 		+ "ENG: %s | RCS: %s\n"
 		+ "FUEL: %.1f / %.1f kg (%.0f%%)\n"
+		+ "HEAT: %.0f%% (%.0f K) | RAD: %.1f/%.0f kW%s\n"
 		+ "MASS: %.1f kg (Dry: %.1f kg)\n"
 		+ "INERTIA: %.1f kg·m² | TURN: %.1f rad/s²\n"
 		+ "RCS: %.2f kN/noz × %.1fm = %.1f kN·m\n"
@@ -801,6 +905,11 @@ func _update_telemetry() -> void:
 		fuel_mass,
 		_initial_fuel_mass,
 		fuel_pct,
+		heat_pct,
+		hull_temp_k,
+		_current_cooling_kw,
+		_current_max_cooling_kw,
+		heat_tag,
 		mass,
 		_dry_mass,
 		inertia,

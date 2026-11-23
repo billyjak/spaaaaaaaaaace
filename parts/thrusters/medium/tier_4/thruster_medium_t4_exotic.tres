@@ -11,3 +11,6 @@ mass_kg = 22.75
 description = "Tier 4 exotic high-energy torch drive (5,500 s Isp). Extreme thrust density and staying time."
 specific_impulse = 5500.0
 tech_thrust_multiplier = 5.0
+overburn_thrust_multiplier = 2.0
+overburn_fuel_multiplier = 4.0
+overburn_heat_kw = 158.4

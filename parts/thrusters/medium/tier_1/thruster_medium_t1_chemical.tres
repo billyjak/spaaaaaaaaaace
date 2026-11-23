@@ -1,13 +1,10 @@
-[gd_resource type="Resource" script_class="ThrusterPart" format=3]
+[gd_resource type="Resource" script_class="ThrusterPart" format=3 uid="uid://b0b6oi6upssvb"]
 
-[ext_resource type="Script" path="res://parts/thruster_part.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://c5d8bit1t1xu8" path="res://parts/thruster_part.gd" id="1_script"]
 
 [resource]
 script = ExtResource("1_script")
+overburn_heat_kw = 72.6
 part_name = "Medium Chemical Drive"
-tech_tier = 1
-size_class = 1
 mass_kg = 35.0
 description = "Tier 1 NASA-era chemical bipropellant engine (310 s Isp)."
-specific_impulse = 310.0
-tech_thrust_multiplier = 1.0

@@ -14,3 +14,5 @@ hull_scene = ExtResource("2_scene")
 fuel_capacity_kg = 515.0
 inertia_radius_m = 2.208
 rcs_lever_arm_m = 3.0
+heat_capacity_kj = 350.0
+max_radiative_cooling_kw = 67.5
