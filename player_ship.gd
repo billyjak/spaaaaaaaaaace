@@ -124,6 +124,7 @@ var _rcs_valve_state: Dictionary = {
 }
 
 @onready var _telemetry_label: Label = get_node_or_null("TelemetryLayer/TelemetryPanel/TelemetryLabel")
+@onready var _track: Node = get_parent().get_node_or_null("Track") if get_parent() != null else null
 
 
 func _ready() -> void:
@@ -284,6 +285,63 @@ func install_thruster(part: ThrusterPart) -> void:
 func install_rcs(part: RCSPart) -> void:
 	installed_rcs = part
 	_refresh_all_stats()
+
+
+func get_flip_and_burn_projection() -> Dictionary:
+	var speed_px := linear_velocity.length()
+	if speed_px < 10.0 or mass <= 0.0:
+		return {"valid": false}
+
+	var vel_dir := linear_velocity / speed_px
+	var retro_rot := (-vel_dir).angle() + PI * 0.5
+	var turn_angle := absf(wrapf(retro_rot - global_rotation, -PI, PI))
+
+	# Time to finish turning from current heading to retrograde using live RCS & inertia
+	var t_flip := 0.0
+	if turn_angle > aim_deadband_rad and _current_rcs_torque > 0.0 and inertia > 0.0 and fuel_mass > 0.0:
+		var alpha := _current_rcs_torque / inertia
+		var alpha_brake := alpha / maxf(brake_multiplier, 1.0)
+		t_flip = sqrt(2.0 * turn_angle * (1.0 / alpha + 1.0 / alpha_brake))
+
+	var flip_drift_px := speed_px * t_flip
+
+	# Main engine retro-burn stopping distance using live wet mass & thrust
+	var max_accel_px := (_current_max_thrust_n / mass) * pixels_per_meter
+	var can_burn := fuel_mass > 0.0 and max_accel_px > 0.001
+	var burn_dist_px := (speed_px * speed_px) / (2.0 * max_accel_px) if can_burn else 0.0
+
+	var flip_end_world := global_position + vel_dir * flip_drift_px
+	var stop_world := global_position + vel_dir * (flip_drift_px + burn_dist_px)
+
+	return {
+		"valid": can_burn,
+		"vel_dir": vel_dir,
+		"flip_drift_px": flip_drift_px,
+		"burn_dist_px": burn_dist_px,
+		"total_stop_px": flip_drift_px + burn_dist_px,
+		"t_flip": t_flip,
+		"flip_end_world": flip_end_world,
+		"stop_world": stop_world,
+	}
+
+
+func place_at_spawn(world_pos: Vector2, world_rot: float, refill_fuel: bool = true) -> void:
+	linear_velocity = Vector2.ZERO
+	angular_velocity = 0.0
+	global_position = world_pos
+	global_rotation = world_rot
+	# Keep PhysicsServer2D in sync immediately so teleporting a RigidBody2D leaves no residual momentum
+	PhysicsServer2D.body_set_state(
+		get_rid(),
+		PhysicsServer2D.BODY_STATE_TRANSFORM,
+		Transform2D(world_rot, world_pos)
+	)
+	PhysicsServer2D.body_set_state(get_rid(), PhysicsServer2D.BODY_STATE_LINEAR_VELOCITY, Vector2.ZERO)
+	PhysicsServer2D.body_set_state(get_rid(), PhysicsServer2D.BODY_STATE_ANGULAR_VELOCITY, 0.0)
+	if refill_fuel:
+		fuel_mass = _initial_fuel_mass
+		_recalculate_mass_and_inertia()
+	_update_telemetry()
 
 
 func _rebuild_hull_visuals() -> void:
@@ -716,6 +774,14 @@ func _update_telemetry() -> void:
 	if not _size_warnings.is_empty():
 		warning_line = "\n[!] SIZE MISMATCH: %s" % ", ".join(_size_warnings)
 
+	var track_line := ""
+	if _track != null and "active_seed" in _track:
+		var status: String = _track.save_status_text if "save_status_text" in _track else ""
+		var suffix := (" %s" % status) if not status.is_empty() else ""
+		var type_str: String = _track.get_track_type_label() if _track.has_method("get_track_type_label") else ""
+		var type_prefix := ("[%s] " % type_str) if not type_str.is_empty() else ""
+		track_line = "\nTRACK: %s#%d%s" % [type_prefix, int(_track.active_seed), suffix]
+
 	_telemetry_label.text = (
 		"SHIP: %s\n"
 		+ "HULL: %s\n"
@@ -726,7 +792,7 @@ func _update_telemetry() -> void:
 		+ "RCS: %.2f kN/noz × %.1fm = %.1f kN·m\n"
 		+ "MAX THRUST: %.2f kN (%.2f G max)\n"
 		+ "BURN: %.2f main / %.2f rcs kg/s | ACCEL: %.2f G\n"
-		+ "SPEED: %.1f m/s%s"
+		+ "SPEED: %.1f m/s%s%s"
 	) % [
 		_active_ship_name,
 		hull_label,
@@ -748,5 +814,6 @@ func _update_telemetry() -> void:
 		_current_rcs_burn_rate,
 		active_accel_g,
 		speed_m_s,
+		track_line,
 		warning_line,
 	]

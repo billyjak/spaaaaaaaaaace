@@ -3,11 +3,9 @@
 [ext_resource type="Script" uid="uid://d2n0xj7vgcbyr" path="res://player_ship.gd" id="1_u52ul"]
 [ext_resource type="Script" uid="uid://dbjhd6oxqqrtb" path="res://grid.gd" id="1_vonw3"]
 [ext_resource type="Texture2D" uid="uid://b726et0wsydls" path="res://resources/milky_way/milky-way-3.jpg" id="3_0b4ue"]
-[ext_resource type="Texture2D" uid="uid://da0jfhni28hws" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_017.png" id="5_n6hdu"]
-[ext_resource type="Texture2D" uid="uid://mpe3a73w2w3y" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_024.png" id="6_1ainy"]
-[ext_resource type="Texture2D" uid="uid://bjr58npngv1c1" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_018.png" id="6_km5ld"]
-[ext_resource type="Texture2D" uid="uid://1nmrkr3lin1o" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_019.png" id="8_km5ld"]
-[ext_resource type="Texture2D" uid="uid://bpg5wjsxmxle3" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Station/spaceStation_025.png" id="9_i2t4f"]
+[ext_resource type="Script" uid="uid://b78r4wuxgo84d" path="res://background_objects.gd" id="4_bgobj"]
+[ext_resource type="Script" uid="uid://c0qe7n66hgw0n" path="res://minimap.gd" id="5_minimap"]
+[ext_resource type="Script" path="res://ship_camera.gd" id="6_shipcam"]
 [ext_resource type="Script" uid="uid://b3pdsm7vex8u1" path="res://track.gd" id="10_8cye3"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_telemetry"]
@@ -38,7 +36,7 @@ continuous_cd = 1
 script = ExtResource("1_u52ul")
 
 [node name="Camera2D" type="Camera2D" parent="PlayerShip" unique_id=18992082]
-zoom = Vector2(1.5, 1.5)
+script = ExtResource("6_shipcam")
 
 [node name="CanvasLayer" type="CanvasLayer" parent="PlayerShip/Camera2D" unique_id=535811549]
 layer = -1
@@ -72,50 +70,23 @@ theme_override_colors/font_color = Color(0.88, 0.96, 1, 1)
 theme_override_font_sizes/font_size = 18
 text = "SHIP: --"
 
-[node name="Station1" type="Parallax2D" parent="." unique_id=1089561932]
-scroll_scale = Vector2(0.01, 0.01)
+[node name="MinimapPanel" type="PanelContainer" parent="PlayerShip/TelemetryLayer" unique_id=1928374653]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -280.0
+offset_top = 20.0
+offset_right = -20.0
+offset_bottom = 280.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_telemetry")
 
-[node name="Sprite2D" type="Sprite2D" parent="Station1" unique_id=1624141930]
-z_index = -20
-position = Vector2(851, 521)
-scale = Vector2(0.5, 0.5)
-texture = ExtResource("5_n6hdu")
+[node name="Minimap" type="Control" parent="PlayerShip/TelemetryLayer/MinimapPanel" unique_id=1928374654]
+layout_mode = 2
+script = ExtResource("5_minimap")
 
-[node name="Satellite1" type="Parallax2D" parent="." unique_id=1149698347]
-scroll_scale = Vector2(0.5, 0.5)
-
-[node name="Sprite2D" type="Sprite2D" parent="Satellite1" unique_id=1400112241]
-z_index = -10
-position = Vector2(1270, 850)
-scale = Vector2(0.5, 0.5)
-texture = ExtResource("6_km5ld")
-
-[node name="Satellite2" type="Parallax2D" parent="." unique_id=1877140709]
-scroll_scale = Vector2(0.25, 0.25)
-
-[node name="Sprite2D" type="Sprite2D" parent="Satellite2" unique_id=1273131671]
-z_index = -11
-position = Vector2(539, 235)
-scale = Vector2(0.25, 0.25)
-texture = ExtResource("6_1ainy")
-
-[node name="Satellite3" type="Parallax2D" parent="." unique_id=1192642928]
-scroll_scale = Vector2(0.1, 0.1)
-
-[node name="Sprite2D" type="Sprite2D" parent="Satellite3" unique_id=1711790592]
-z_index = -12
-position = Vector2(1113, 446)
-scale = Vector2(0.1, 0.1)
-texture = ExtResource("8_km5ld")
-
-[node name="Satellite4" type="Parallax2D" parent="." unique_id=902446802]
-scroll_scale = Vector2(0.05, 0.05)
-
-[node name="Sprite2D" type="Sprite2D" parent="Satellite4" unique_id=2011174046]
-z_index = -13
-position = Vector2(709, 778)
-scale = Vector2(0.05, 0.05)
-texture = ExtResource("9_i2t4f")
+[node name="BackgroundObjects" type="Node2D" parent="." unique_id=1089561932]
+script = ExtResource("4_bgobj")
 
 [node name="TextureRect2" type="TextureRect" parent="." unique_id=1795828213]
 visible = false
@@ -132,17 +103,22 @@ expand_mode = 1
 stretch_mode = 5
 
 [node name="Track" type="StaticBody2D" parent="." unique_id=878564148]
+visible = false
 position = Vector2(0, -1)
 script = ExtResource("10_8cye3")
 
 [node name="OuterWallVisual" type="Line2D" parent="Track" unique_id=589129341]
+visible = false
 points = PackedVector2Array(-5119, 333, 2545, 355, 2770, 329, 3119, 231, 3400, -1, 3638, -417, 3663, -821, 3645, -1316, 3467, -1720, 3168, -2105, 2483, -2552, 1963, -2768, 1068, -2963, 911, -3002, 699, -3012, 456, -2992, 112, -2992, -105, -3381, -297, -3851, -150, -4119, 360, -4443, 1048, -4741, 1442, -4918, 2196, -5394, 2787, -5626, 2939, -6244, 3163, -7032, 2921, -7632, 2760, -7856, 2267, -7937, 2589, -7527, 2711, -7356, 2719, -6786, 2467, -6420, 2117, -5964, 1669, -5419, 1278, -5337, 179, -5354, -1433, -5924, -1910, -6168, -2316, -6538, -2530, -6895, -2864, -7515, -1481, -8147, -456, -8588, 354, -9196, 354, -9613, -707, -9899, -1624, -10018, -3043, -10113, -2888, -11341, -1648, -11746, -456, -11949, -111, -12080, 592, -12163, 1808, -12414, 1713, -12533, 461, -12628, -981, -12712, -1946, -12807, -2876, -12890, -3782, -12890, -3668, -14633, -2368, -15153, -60, -15651, 915, -15944, 443, -16367, -684, -16659, -1637, -16692, -2764, -16572, -3718, -16312, -4281, -15890, -4379, -15511, -4968, -14828, -4325, -14396, -4037, -13911, -4928, -13111, -5531, -12455, -6450, -11812, -8034, -10739, -6553, -8925, -8315, -8006, -6578, -6856, -8775, -5604, -6490, -5070, -8603, -4211, -10926, -4187, -13132, -4698, -13396, -4712, -14142, -4807, -14649, -4776, -15284, -4823, -16473, -4902, -17457, -4728, -17965, -4458, -18234, -4189, -18409, -3871, -18472, -3538, -18472, -3269, -18440, -2856, -18409, -2412, -18314, -2126, -17949, -1762, -17631, -1492, -17298, -1159, -17044, -778, -16521, -397, -15601, -64, -14919, 158, -14268, 285, -5119, 328)
 
 [node name="InnerWallVisual" type="Line2D" parent="Track" unique_id=1509215903]
+visible = false
 points = PackedVector2Array(-5238, 700, 2523, 710, 3207, 585, 3682, 351, 4166, -88, 4277, -583, 4388, -1378, 4311, -2407, 4016, -2902, 3627, -3235, 2870, -3463, 2036, -3519, 1325, -3497, 763, -3446, 699, -3634, 901, -3679, 1022, -3816, 1245, -4048, 1492, -4165, 1689, -4215, 1853, -4279, 2543, -4526, 3015, -4989, 3656, -5255, 3833, -5767, 3951, -6230, 4060, -6919, 3981, -7589, 3853, -8012, 3352, -8289, 2681, -8415, 2099, -8370, 1776, -8370, 1624, -8209, 1433, -8141, 1647, -7875, 1810, -7682, 2017, -7423, 2047, -7238, 2025, -6942, 1936, -6691, 1721, -6217, 1559, -6076, 1351, -5913, 1122, -5721, 870, -5751, 663, -5832, 215, -5903, -152, -5968, -480, -6099, -703, -6244, -1319, -6650, -1673, -6899, 853, -8642, 949, -8911, 966, -8791, 1292, -9073, 1440, -9480, 1751, -9827, 1692, -10072, 1055, -10175, 278, -10294, -114, -10390, -950, -10464, -2341, -10560, -2719, -10693, -2386, -10789, -1853, -10900, -684, -11137, 367, -11322, 1203, -11559, 2099, -11626, 2794, -11737, 2750, -13483, 1809, -13555, 968, -13548, -1030, -13622, -2006, -13723, -2719, -13817, -3264, -13797, -3345, -13817, -1965, -14188, 510, -14665, 1151, -15024, 1864, -15676, 2046, -16105, 1724, -16606, 1283, -17118, 652, -17488, 8, -17619, -1005, -17833, -1958, -17941, -2959, -17810, -3937, -17619, -4616, -17369, -5152, -16999, -5435, -16336, -5424, -15935, -5446, -15296, -5424, -15079, -5446, -14798, -5468, -14267, -5576, -13834, -5788, -13729, -6057, -13452, -6407, -13289, -6789, -13045, -7261, -12703, -7945, -12239, -8184, -12086, -8613, -12041, -8954, -11701, -9276, -11405, -9419, -11128, -9634, -10976, -9518, -10796, -8954, -10564, -8793, -10411, -8694, -10196, -8461, -9802, -8219, -9489, -8067, -9301, -8148, -9140, -8336, -8997, -8640, -8719, -8810, -8531, -8900, -8298, -9178, -7913, -8909, -7779, -8730, -7519, -8399, -7259, -8157, -7107, -8031, -6991, -8085, -6615, -8219, -6525, -8596, -6149, -8846, -5970, -9115, -5666, -9178, -5478, -8819, -5325, -8667, -5281, -8576, -5260, -8378, -5215, -8116, -5177, -7767, -5104, -7509, -5078, -7140, -5013, -7433, -4869, -8085, -4730, -8835, -4543, -9643, -4514, -10551, -4701, -11215, -4946, -12065, -5249, -13452, -5447, -14366, -5553, -15091, -5827, -15943, -5814, -16599, -5906, -17805, -6063, -18342, -5971, -19116, -5696, -19273, -5578, -20256, -4975, -20953, -4394, -21212, -2937, -21328, -1639, -21068, -904, -20563, -212, -20001, 33, -19727, 149, -20020, 219, -19211, 632, -18164, 1187, -17323, 1457, -16689, 1742, -15610, 2091, -14563, 2202, -13262, 2329, -12549, 2424, -11502, 2535, -9931, 2503, -9122, 2266, -7647, 1790, -6616, 1345, -5791, 981, -5458, 806, -5238, 701)
 
 [node name="OuterWallCollision" type="CollisionPolygon2D" parent="Track" unique_id=1664957750]
+visible = false
 build_mode = 1
 
 [node name="InnerWallCollision" type="CollisionPolygon2D" parent="Track" unique_id=589691000]
+visible = false
 build_mode = 1
