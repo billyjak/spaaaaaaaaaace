@@ -36,9 +36,9 @@ extends Camera2D
 ## Close-up zoom when approaching and navigating tight turns/hairpins.
 @export var close_zoom: float = 1.5
 ## Default cruising zoom for normal course sections and gentle sweeping curves.
-@export var default_zoom: float = 1.15
+@export var default_zoom: float = 1.0
 ## Widest zoom-out reserved strictly for major straightaways (lower to see even further down straights).
-@export var wide_zoom: float = 0.85
+@export var wide_zoom: float = 0.50
 ## Sightline distance (px) at or below which camera reaches full `close_zoom` (tight turns).
 @export var turn_sightline_px: float = 550.0
 ## Sightline distance (px) corresponding to `default_zoom` (median/normal track openness).
@@ -76,6 +76,10 @@ func _bind_track() -> void:
 
 
 func _on_track_generated(_seed_value: int, _spawn_pos: Vector2, _spawn_rot: float) -> void:
+	reset_snap()
+
+
+func reset_snap() -> void:
 	_offset_velocity = Vector2.ZERO
 	_needs_snap = true
 

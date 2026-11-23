@@ -18,8 +18,10 @@
   * Visually fitted `HullCollision` reparented onto `PlayerShip`, per-hull exhaust base scaling, and live D-pad size/tier cycling.
 * **True-Perspective Continuous-Depth Space Background (`background_objects.gd`):**
   * Continuous 3D distance `Z` (`2.2..110`) with toroidal wrapping, Gaussian bell-curve AntuZ meteors with size-limited structural spin (`1 / R`), Kenney X2 stations, colossal deep-space anchors (`xl` meteors & `017`/`026` megastations), and exact 3D camera-altitude projection (eliminating 2D dolly-zoom warp).
-* **4-Tier Procedural Track Generator, Minimap & Course-Sightline Camera (`track.gd`, `minimap.gd`, `ship_camera.gd`):**
-  * Asymmetric Convex Hull + Perpendicular Edge Carving generator with 4 escalating track types (`Type 1 - Speedway`, `Type 2 - Circuit`, `Type 3 - Technical`, `Type 4 - Switchback`), cycled via `new_track` (`N`) and saved with type & seed via `save_track` (`S`) to `user://saved_tracks.json`.
+* **4-Tier Procedural Track Generator, Dynamic Mixed-Sector Tracks, Minimap & Course-Sightline Camera (`track.gd`, `minimap.gd`, `ship_camera.gd`):**
+  * Asymmetric Convex Hull + Perpendicular Edge Carving generator with 4 fixed archetype tiers (`Type 1 - Speedway`, `Type 2 - Circuit`, `Type 3 - Technical`, `Type 4 - Switchback`, cycled via `new_track` / `N`) **plus** a **Dynamic Mixed-Sector Generator (`TrackType.DYNAMIC`, triggered via `new_dynamic_track` / `J`)**.
+  * **Dynamic Variable-Curviness Sectors:** Rather than locking an entire circuit to one uniform turn style, walks around the track silhouette in **random-length chunks** (1–3 spans / 1–6 points per sector), rolling a fresh continuous **curviness value (`0.0` dead straight → `0.35` flowing sweeper → `0.60` S-chicane → `1.0` tight hairpin / switchback cluster)** for each chunk (including per-vertex spline handle tension). Produces memorable multi-character circuits where huge flip-and-burn straights slam directly into tight hairpin chains and back out into sweeping arcs — and lays the foundation for future career leagues to simply bias the curviness roll range rather than relying on rigid templates.
+  * Tracks are saved with type & seed via `save_track` (`S`) to `user://saved_tracks.json`.
   * Top-right corner minimap (`minimap.gd`) showing track walls, start marker, and live ship chevron (flip-and-burn projection kept in code, toggled off by default).
   * 3-zone honest course-sightline camera (`ship_camera.gd`) following a heavily smoothed gentle-arc camera rail with a critically damped spring (`close_zoom = 1.50` in tight turns, `default_zoom = 1.15` normal, `wide_zoom = 0.85` on major straights).
 
@@ -41,6 +43,15 @@
 * **Thermal HUD Gauge (Implemented):**
   * GUI-movable/resizable bottom-center heat gauge (`heat_gauge.gd`) that fills `0% → 100%`, shifting smoothly **yellow → orange → red**, with a `25%` safety-recovery tick and crimson pulse during lockout.
 
+### Track Technology Progression & Boundary Physics (Post-MVP Career Synergy)
+* **League Tech Escalation:** As the player progresses through higher-paying circuits in a generational run and unlocks faster ship tiers, the race venues themselves upgrade in track technology — changing both **visual aesthetic** and **how the ship physically interacts with track edges**:
+  * **Early Leagues — Industrial Orbital Frame (Vibe 2, Hard Physical Walls):**
+    * *Visuals:* Prefabricated skeletal steel/titanium truss & containment-net highway suspended in orbit; translucent dark slate-blue mesh deck with faint transverse structural ribs, chunky metallic guardrails, industrial hazard stripes on tight hairpin outer walls, and alternating cyan/amber navigation strobes.
+    * *Boundary Physics:* Solid, unforgiving physical rails — hitting the edge bounces/damages the drone and risks an outright crash (forcing deployment of a spare drone stock).
+  * **Mid/High Leagues — Orbital Holo-Corridor (Vibe 1, Implemented Current Aesthetic):**
+    * *Visuals:* Floating physical emitter buoys projecting a glowing translucent cyan-blue containment corridor in open space; edge-faded blue surface wash (clear down the middle so deep space shines through), subtle forward flow chevrons, dual-layer additive-glow energy rails, amber outer-wall warning kerbs on sharp hairpins, and a glowing Start/Finish gate.
+    * *Boundary Physics (Future Mode):* Pure projected/AR course boundaries that the ship can **fly straight over** without crashing — instead incurring a **track-limits time penalty** while ordered **checkpoints** prevent corner-cutting/cheating. *(Currently solid collision remains enabled via `solid_walls` for MVP testing; switching to pass-through + time-penalty mode slots cleanly alongside the upcoming Checkpoint system.)*
+
 ### Post-MVP Stretch Goals (Generational Space-Racing Roguelite)
 * **Generational Family Bloodline & Career Circuit:**
   * Each run is a career across increasingly difficult, higher-payout racing leagues in a futuristic spectator sport; when a run ends, the next run continues as a **descendant in the same family line** carrying forward legacy unlocks/heirlooms.
@@ -61,12 +72,26 @@
     * **Kinetic Shielding:** Counters Kinetic Repeaters at the cost of shield generator mass.
     * **Heat Dissipation Systems (Radiators / Heat Sinks):** Counters enemy Lasers *and* manages heat from your own high-output lasers/drives at the cost of radiator mass.
     * **Chaff Pods:** Counters Missiles by breaking guidance locks; sheds minor mass as charges are deployed.
-  * **Optional Strategy & Physics Depth:** Mid-race Pit/Refuel lanes, and per-part physical Center-of-Mass / pixel-based rotational inertia (`I = Σ m_i · r_i²`).
-* **Dynamic Speed-Based Camera Zoom:**
-  * Smoothly lerp `Camera2D.zoom` out as speed increases (zoomed in close when slow, wider view of upcoming corners at high speed).
+  * **Optional Strategy & Physics Depth:**
+    * Mid-race Pit/Refuel lanes and per-part physical Center-of-Mass / pixel-based rotational inertia (`I = Σ m_i · r_i²`).
+    * **Range-Matched Track Scaling:** Automatically compute a craft's burn time / total potential travel distance and scale procedural track length to match (e.g., ~1/3 of range for 3-lap races or full range for 1-lap sprints) so T1 chemical drives and T4 exotic drives both face balanced fuel pressure.
+    * **Mid-Race Drone Respawn Hotkey:** Eject/discard a stranded or damaged drone and launch a fresh drone from your remaining race stock.
+    * **Future KBM Support:** Optional Mouse Point-to-Aim steering mode (using the same physical RCS flight computer) deferred past the gamepad-first MVP.
 
-### Next MVP Steps
-* **Playable Racing Loop:** Controls (KBM Mouse-Aim + Manual RCS + Decoupled hold), Procedural Track + Translucent Track Ribbon + Checkpoints, Auto-Populated Parallax Asteroids/Stations, Main Menu & 3-Lap Time Trial Persistence.
+### Finalized Remaining MVP Scope (Self-Contained Executable / AppImage)
+* **Design Scope Decisions (Locked In):**
+  * **Gamepad-First (`STICK_AIM`):** Manual RCS, KBM controls, and the Prograde Velocity Indicator are explicitly **excluded** from the MVP.
+  * **1-Lap Time Trial (Start → Finish):** Single-lap sprints keep T1–T4 fuel ranges playable without range-scaling complexity.
+  * **Zero Disk Writes (Session-Only Records):** Best times are held purely in memory for the current play session (clean standalone executable / AppImage with no system file writes required for MVP).
+* **Step 1 — Ordered Checkpoints, 1-Lap Race Loop, Trials-Style Countdown & Quick Restart:**
+  * Evenly spaced ordered `Area2D` checkpoints around the track loop (with subtle visual highlight on the next active gate in `track_holo_overlay.gd`), enforcing sequential completion so crossing the Start/Finish line backward cannot cheat.
+  * **Trials-Style Race Starts:** Full **`3 — 2 — 1 — GO!`** countdown on initial race entry; snappy 1-second **`READY — GO!`** countdown on restart.
+  * **Quick Restart Hotkey (`quick_restart`):** Bound to controller **Select / Back / Minus** (`JOY_BUTTON_BACK`, button index `4`) for instant Trials-style 1-second restarts.
+  * **Race HUD & Finish Overlay:** Live timer + checkpoint progress (`CP X / N`), finishing on Start/Finish crossing to display final time, `NEW BEST!` badge, and **Restart** / **Main Menu** options.
+* **Step 2 — Main Menu, Session `GameState` & Pause Menu (Gamepad-Navigable):**
+  * **Session `GameState` Autoload:** Stores selected track, ship weight class, tech tier, and in-memory best times keyed by `(Track, Tech Tier)` — **shared across all 3 weight classes** (recording both the winning time and winning weight class!).
+  * **Menu Flow:** `Main Menu` → `Press Start` → `Time Trial` → `Select Track` (**5 curated deterministic preset tracks** + **6th Random Gen option** with live minimap preview & re-roll) → `Select Weight Class` (`Small / Medium / Large`) → `Select Tech Tier` (`T1–T4`, displaying the session's Best Recorded Time & winning class for that Track + Tier) → `Race`.
+  * **Pause Menu (`Start` button during race):** Pauses simulation cleanly with **Resume**, **Restart** (triggers 1-second `READY — GO!`), and **Main Menu**.
 
 ---
 

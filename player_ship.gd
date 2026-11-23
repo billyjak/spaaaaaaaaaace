@@ -89,6 +89,8 @@ const MIN_INERTIA := 0.01
 @export_range(0.1, 0.9, 0.05) var overheat_recovery_fraction: float = 0.25
 
 var rotational_stabilize := true
+var controls_locked: bool = false
+var hold_at_start: bool = false
 var current_heat_kj: float = 0.0
 var heat_capacity_kj: float = 100.0
 var overburn_locked_out: bool = false
@@ -362,6 +364,9 @@ func place_at_spawn(world_pos: Vector2, world_rot: float, refill_fuel: bool = tr
 		overburn_locked_out = false
 		is_overburning = false
 		_recalculate_mass_and_inertia()
+	var cam := get_node_or_null("Camera2D")
+	if cam != null and cam.has_method("reset_snap"):
+		cam.reset_snap()
 	_update_telemetry()
 
 
@@ -604,81 +609,86 @@ func _physics_process(delta: float) -> void:
 	var desired_rcs_linear_n := 0.0
 	var desired_rcs_linear_dir_world := Vector2.ZERO
 
-	# Player boost (main thruster)
-	var trigger := Input.get_action_strength("boost")
-	if trigger > 0.05:
-		main_throttle = maxf(main_throttle, trigger)
+	if hold_at_start:
+		linear_velocity = Vector2.ZERO
+		angular_velocity = 0.0
 
-	# Dedicated Overburn bind: fires full throttle at 200% thrust / 400% fuel burn
-	# while allowed by the thermal safety interlock.
-	var overburn_pressed := (
-		(InputMap.has_action("overburn") and Input.is_action_pressed("overburn"))
-		or (InputMap.has_action(" overburn") and Input.is_action_pressed(" overburn"))
-	)
-	if overburn_pressed and not overburn_locked_out and fuel_mass > 0.0 and _current_max_thrust_n > 0.0:
-		overburn_active = true
-		main_throttle = 1.0
+	if not controls_locked:
+		# Player boost (main thruster)
+		var trigger := Input.get_action_strength("boost")
+		if trigger > 0.05:
+			main_throttle = maxf(main_throttle, trigger)
 
-	# Stick aim (draws from shared fuel_mass)
-	var stick := Vector2(
-		Input.get_axis("look_left", "look_right"),
-		Input.get_axis("look_up", "look_down")
-	)
-	var aiming: bool = stick.length() > 0.2
+		# Dedicated Overburn bind: fires full throttle at 200% thrust / 400% fuel burn
+		# while allowed by the thermal safety interlock.
+		var overburn_pressed := (
+			(InputMap.has_action("overburn") and Input.is_action_pressed("overburn"))
+			or (InputMap.has_action(" overburn") and Input.is_action_pressed(" overburn"))
+		)
+		if overburn_pressed and not overburn_locked_out and fuel_mass > 0.0 and _current_max_thrust_n > 0.0:
+			overburn_active = true
+			main_throttle = 1.0
 
-	if aiming:
-		if fuel_mass > 0.0 and _current_rcs_torque > 0.0:
-			var target_rot: float = stick.angle() + PI * 0.5
-			var error: float = wrapf(target_rot - rotation, -PI, PI)
-			var abs_error: float = abs(error)
-			var abs_vel: float = abs(angular_velocity)
+		# Stick aim (draws from shared fuel_mass)
+		var stick := Vector2(
+			Input.get_axis("look_left", "look_right"),
+			Input.get_axis("look_up", "look_down")
+		)
+		var aiming: bool = stick.length() > 0.2
 
-			# Inside angular deadband — stop residual spin without chasing stick micro-jitter
-			if abs_error < aim_deadband_rad:
-				if abs_vel < 0.08:
-					angular_velocity = 0.0
+		if aiming:
+			if fuel_mass > 0.0 and _current_rcs_torque > 0.0:
+				var target_rot: float = stick.angle() + PI * 0.5
+				var error: float = wrapf(target_rot - rotation, -PI, PI)
+				var abs_error: float = abs(error)
+				var abs_vel: float = abs(angular_velocity)
+
+				# Inside angular deadband — stop residual spin without chasing stick micro-jitter
+				if abs_error < aim_deadband_rad:
+					if abs_vel < 0.08:
+						angular_velocity = 0.0
+					elif inertia > 0.0 and delta > 0.0:
+						var stop_torque: float = -angular_velocity * inertia / delta
+						desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
 				elif inertia > 0.0 and delta > 0.0:
+					# Time-optimal phase-plane speed profile with PWM fractional final-tick pulse
+					# so RCS never overshoots past the target into a 2-frame limit cycle.
+					var alpha: float = _current_rcs_torque / inertia
+					var alpha_brake: float = alpha / maxf(brake_multiplier, 1.0)
+					var desired_speed: float = minf(sqrt(2.0 * alpha_brake * abs_error), abs_error / delta)
+					var desired_vel: float = signf(error) * desired_speed
+					var required_torque: float = (desired_vel - angular_velocity) * inertia / delta
+					desired_rcs_torque = clampf(required_torque, -_current_rcs_torque, _current_rcs_torque)
+
+		# Rotational stabilize only when not aiming (draws from shared fuel_mass)
+		elif rotational_stabilize:
+			if fuel_mass > 0.0 and _current_rcs_torque > 0.0:
+				if abs(angular_velocity) > 0.001 and delta > 0.0:
+					# Fire full RCS torque when spinning fast, or a PWM fractional pulse on the
+					# final tick to land directly on 0.0 rad/s without overshooting.
 					var stop_torque: float = -angular_velocity * inertia / delta
 					desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
-			elif inertia > 0.0 and delta > 0.0:
-				# Time-optimal phase-plane speed profile with PWM fractional final-tick pulse
-				# so RCS never overshoots past the target into a 2-frame limit cycle.
-				var alpha: float = _current_rcs_torque / inertia
-				var alpha_brake: float = alpha / maxf(brake_multiplier, 1.0)
-				var desired_speed: float = minf(sqrt(2.0 * alpha_brake * abs_error), abs_error / delta)
-				var desired_vel: float = signf(error) * desired_speed
-				var required_torque: float = (desired_vel - angular_velocity) * inertia / delta
-				desired_rcs_torque = clampf(required_torque, -_current_rcs_torque, _current_rcs_torque)
+				else:
+					angular_velocity = 0.0
 
-	# Rotational stabilize only when not aiming (draws from shared fuel_mass)
-	elif rotational_stabilize:
-		if fuel_mass > 0.0 and _current_rcs_torque > 0.0:
-			if abs(angular_velocity) > 0.001 and delta > 0.0:
-				# Fire full RCS torque when spinning fast, or a PWM fractional pulse on the
-				# final tick to land directly on 0.0 rad/s without overshooting.
-				var stop_torque: float = -angular_velocity * inertia / delta
-				desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
-			else:
-				angular_velocity = 0.0
-
-	# Momentum stabilize (uses main engine when nose is aligned opposite velocity;
-	# otherwise falls back to symmetric linear RCS — both draw from shared fuel_mass)
-	if Input.is_action_pressed("stabilize_momentum"):
-		var speed: float = linear_velocity.length()
-		if speed > 0.5 and delta > 0.0 and fuel_mass > 0.0:
-			var vel_dir: Vector2 = linear_velocity.normalized()
-			var forward: Vector2 = Vector2.UP.rotated(rotation)
-			var alignment: float = forward.dot(-vel_dir)
-			if alignment > 0.1 and _current_max_thrust_n > 0.0:
-				main_throttle = maxf(main_throttle, clampf(alignment, 0.0, 1.0))
-			elif _current_rcs_linear_force > 0.0:
-				var speed_m_s: float = speed / maxf(pixels_per_meter, 0.001)
-				var force_to_stop_n: float = speed_m_s * mass / delta
-				desired_rcs_linear_n = minf(_current_rcs_linear_force, force_to_stop_n)
-				if desired_rcs_linear_n > 0.0:
-					desired_rcs_linear_dir_world = -vel_dir
-		elif fuel_mass > 0.0:
-			linear_velocity = Vector2.ZERO
+		# Momentum stabilize (uses main engine when nose is aligned opposite velocity;
+		# otherwise falls back to symmetric linear RCS — both draw from shared fuel_mass)
+		if Input.is_action_pressed("stabilize_momentum"):
+			var speed: float = linear_velocity.length()
+			if speed > 0.5 and delta > 0.0 and fuel_mass > 0.0:
+				var vel_dir: Vector2 = linear_velocity.normalized()
+				var forward: Vector2 = Vector2.UP.rotated(rotation)
+				var alignment: float = forward.dot(-vel_dir)
+				if alignment > 0.1 and _current_max_thrust_n > 0.0:
+					main_throttle = maxf(main_throttle, clampf(alignment, 0.0, 1.0))
+				elif _current_rcs_linear_force > 0.0:
+					var speed_m_s: float = speed / maxf(pixels_per_meter, 0.001)
+					var force_to_stop_n: float = speed_m_s * mass / delta
+					desired_rcs_linear_n = minf(_current_rcs_linear_force, force_to_stop_n)
+					if desired_rcs_linear_n > 0.0:
+						desired_rcs_linear_dir_world = -vel_dir
+			elif fuel_mass > 0.0:
+				linear_velocity = Vector2.ZERO
 
 	# Compute combined propellant draw from shared fuel_mass for both main engine & RCS
 	var applied_rcs_torque := 0.0
