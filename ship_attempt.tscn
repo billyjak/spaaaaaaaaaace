@@ -1,0 +1,129 @@
+[gd_scene format=3 uid="uid://b3jl7ngckls1j"]
+
+[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="1_exhaust"]
+[ext_resource type="PackedScene" uid="uid://ch1s2eunf4tyr" path="res://rcs_thruster_small.tscn" id="2_rcs"]
+[ext_resource type="Script" path="res://ship_module.gd" id="3_module"]
+
+[node name="ShipAttempt" type="Node2D" unique_id=1785071269]
+
+[node name="FuelTank" type="Node2D" parent="." unique_id=581001389]
+z_index = 1
+script = ExtResource("3_module")
+role = 1
+hull_mass_weight = 40.0
+
+[node name="Shape" type="Polygon2D" parent="FuelTank" unique_id=687067615]
+z_index = 3
+color = Color(0.76, 0.8, 0.86, 1)
+polygon = PackedVector2Array(6, 0, 5.54328, 2.2961, 4.24264, 4.24264, 2.2961, 5.54328, 0, 6, -2.2961, 5.54328, -4.24264, 4.24264, -5.54328, 2.2961, -6, 0, -5.54328, -2.2961, -4.24264, -4.24264, -2.2961, -5.54328, 0, -6, 2.2961, -5.54328, 4.24264, -4.24264, 5.54328, -2.2961)
+
+[node name="Transmitter" type="Node2D" parent="." unique_id=1495505323]
+z_index = 2
+position = Vector2(0, -7.5)
+script = ExtResource("3_module")
+role = 3
+hull_mass_weight = 16.0
+
+[node name="Shape" type="Polygon2D" parent="Transmitter" unique_id=1225621934]
+color = Color(0.28, 0.35, 0.44, 1)
+polygon = PackedVector2Array(-2.8, -2.5, 2.8, -2.5, 2.8, 2.5, -2.8, 2.5)
+
+[node name="StatusLED" type="Polygon2D" parent="Transmitter" unique_id=1225621935]
+position = Vector2(1.4, -0.8)
+color = Color(0.25, 1, 0.45, 1)
+polygon = PackedVector2Array(-0.6, -0.6, 0.6, -0.6, 0.6, 0.6, -0.6, 0.6)
+
+[node name="MainEngine" type="Node2D" parent="." unique_id=1577215265]
+position = Vector2(0, 9)
+script = ExtResource("3_module")
+role = 2
+hull_mass_weight = 0.0
+
+[node name="Shape" type="Polygon2D" parent="MainEngine" unique_id=1655979702]
+z_index = 1
+color = Color(0.45, 0.48, 0.54, 1)
+polygon = PackedVector2Array(0, -4, 3.8, 4.5, -3.8, 4.5)
+
+[node name="ExhaustSprite" type="Sprite2D" parent="MainEngine" unique_id=1704919923]
+position = Vector2(-1.4210961e-14, 9)
+rotation = 3.1415927
+scale = Vector2(0.445, 0.445)
+texture = ExtResource("1_exhaust")
+
+[node name="TrussNE" type="Node2D" parent="." unique_id=696912489]
+position = Vector2(3.5, -3.5)
+rotation = 0.7853982
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussNE" unique_id=71453666]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-1.2, 0.5, 1.2, 0.5, 1.2, -11.5, -1.2, -11.5)
+
+[node name="RcsCW" parent="TrussNE" unique_id=200100001 instance=ExtResource("2_rcs")]
+position = Vector2(-4.1, -10.5)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussNE" unique_id=200100002 instance=ExtResource("2_rcs")]
+position = Vector2(4.1, -10.5)
+rotation = 1.5707964
+
+[node name="TrussSE" type="Node2D" parent="." unique_id=158791286]
+position = Vector2(3.5, 3.5)
+rotation = 2.3561945
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussSE" unique_id=696058077]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-1.2, 0.5, 1.2, 0.5, 1.2, -11.5, -1.2, -11.5)
+
+[node name="RcsCW" parent="TrussSE" unique_id=200100003 instance=ExtResource("2_rcs")]
+position = Vector2(-4.1, -10.5)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussSE" unique_id=200100004 instance=ExtResource("2_rcs")]
+position = Vector2(4.1, -10.5)
+rotation = 1.5707964
+
+[node name="TrussSW" type="Node2D" parent="." unique_id=461133800]
+position = Vector2(-3.5, 3.5)
+rotation = -2.3561945
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussSW" unique_id=1344607534]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-1.2, 0.5, 1.2, 0.5, 1.2, -11.5, -1.2, -11.5)
+
+[node name="RcsCW" parent="TrussSW" unique_id=200100005 instance=ExtResource("2_rcs")]
+position = Vector2(-4.1, -10.5)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussSW" unique_id=200100006 instance=ExtResource("2_rcs")]
+position = Vector2(4.1, -10.5)
+rotation = 1.5707964
+
+[node name="TrussNW" type="Node2D" parent="." unique_id=1122981110]
+position = Vector2(-3.5, -3.5)
+rotation = -0.7853982
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussNW" unique_id=1056719524]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-1.2, 0.5, 1.2, 0.5, 1.2, -11.5, -1.2, -11.5)
+
+[node name="RcsCW" parent="TrussNW" unique_id=200100007 instance=ExtResource("2_rcs")]
+position = Vector2(-4.1, -10.5)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussNW" unique_id=200100008 instance=ExtResource("2_rcs")]
+position = Vector2(4.1, -10.5)
+rotation = 1.5707964
+
+[node name="AuxMountPort" type="Marker2D" parent="." unique_id=200100009]
+position = Vector2(-6.5, 0)
+
+[node name="AuxMountStarboard" type="Marker2D" parent="." unique_id=200100010]
+position = Vector2(6.5, 0)

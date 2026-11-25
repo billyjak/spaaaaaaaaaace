@@ -36,12 +36,41 @@
 * **Part Stat Ownership & Post-MVP Cooling Rebalance:**
   * **Heat Generation (`ThrusterPart`):** Each engine defines `overburn_heat_kw` (scaling up across Chemical → NTR → Fusion → Exotic), allowing cool-running vs. hot-running engine perks across tiers and manufacturers.
   * **Baseline Passive Cooling (`HullPart`):** Single-part baseline cooling (`max_radiative_cooling_kw`, `heat_capacity_kj`) lives on the **Hull**, scaling with material tier (`Steel → Titanium → Carbon → Exotic`) and hull size.
-  * **MVP vs. Post-MVP Rebalance Note:** Current bare-hull passive cooling is intentionally tuned to be comfortable and self-sufficient for the MVP (before auxiliary modules exist). Once auxiliary cooling parts and lasers are introduced, **bare-hull passive cooling should be nerfed significantly** so that vacuum behaves like a true thermos — making current-level heat management achievable *only* by investing mass into a dedicated cooling system (creating a genuine ultralight "naked" vs. actively/passively cooled build trade-off).
-  * **Future Auxiliary Heat Sinks (`AuxPart` / `DefensePart` — Two Distinct Archetypes):**
-    * **Passive Radiators:** Add dry mass to permanently boost `max_radiative_cooling_kw` (strong against sustained heat and enemy Lasers).
-    * **Active Expendable Heat Sinks (Thermal Slug Ejectors):** Carry a magazine of solid high-heat-capacity blocks/slugs (scaling from basic metals up to exotic sci-fi thermal-storage materials). Triggering one rapidly dumps a large burst of ship heat into a slug and **ejects the superheated slug into space**, instantly cooling the ship **and shedding the slug's real mass** (lowering ship mass & inertia mid-race).
+  * **Internal Chassis Thermal Bus & Optional `aux_parts` Architecture:**
+    * Every ship chassis includes a built-in **Internal Thermal Bus** wired to standardized symmetric side hardpoints (`AuxMountPort` / `AuxMountStarboard`). Heat producers (Main Engine Overburn, own Lasers, incoming enemy Lasers) all dump into this shared thermal pool.
+    * Heat management systems are **optional `aux_parts`** rather than a mandatory core slot: a ship *can* fly naked (minimum mass/inertia, tiny bare-chassis vacuum trickle cooling where Overburn is only a rare panic move) or mount one or more cooling modules onto auxiliary hardpoints.
+  * **MVP vs. Post-MVP Rebalance Note:** Current bare-hull passive cooling is intentionally tuned to be comfortable and self-sufficient for the MVP (before auxiliary modules exist). Once auxiliary cooling parts and lasers are introduced, **bare-hull passive cooling should be nerfed significantly** (down to ~5–10% vacuum trickle) so that realistic space-vacuum heat management is achievable *only* by investing mass and hardpoint space into a dedicated cooling system.
+  * **Future Auxiliary Heat Management Systems (`AuxPart` — Plugging Into Symmetric Hardpoints):**
+    * **Passive Radiators (Continuous `T⁴` Cooling — Fragile External Panels, Zero Ammo):**
+      * `T1`: White Pumped-Fluid Panels (ISS/KSP-style aluminum/ammonia wings, bulky & heavier).
+      * `T2`: Titanium Vapor Heat-Pipe Fins (sleeker, higher temp, faint cherry-red glow).
+      * `T3`: Carbon-Carbon High-Temp Fins (ultralight, glows bright orange-red under Fusion loads).
+      * `T4`: Magnetic Liquid-Droplet / Dust Curtain (real NASA concept — featherlight, huge `T⁴` area, immune to solid wing-snapping on wall scrapes).
+    * **Active Expendable Heat Sinks (Instant Heat Dump — Compact/Armored Box, Sheds Real Mass):**
+      * `T1`: Copper / Steel Thermal Slugs (heavy solid blocks ejected red-hot).
+      * `T2`: Lithium / Beryllium Phase-Change Canisters (latent melting heat, ~2–3× capacity/kg).
+      * `T3`: Ablative Ceramic / Cryo-Salt Pucks (incandescent flash-vapor ejection, light magazine).
+      * `T4`: Exotic Endothermic Metamaterial Cells (colossal fusion-grade thermal absorption).
+    * **Bonus Wildcard Archetype:** *Open-Cycle Cryo-Venting* — boils off cold fuel straight from the main propellant tank to cool rapidly at the direct cost of race fuel.
 * **Thermal HUD Gauge (Implemented):**
   * GUI-movable/resizable bottom-center heat gauge (`heat_gauge.gd`) that fills `0% → 100%`, shifting smoothly **yellow → orange → red**, with a `25%` safety-recovery tick and crimson pulse during lockout.
+
+### Post-MVP Phase 1: Modular Ship Assembly, Breakapart Crash Physics & Checkpoint Respawn
+* **Core 5 Visible Modular Ship Parts + Standardized `AuxMount` Sockets:**
+  * Replace single-sprite placeholder ships with custom modular assemblies mounted onto a central **Chassis / Spaceframe** (`Marker2D` sockets + per-part `CollisionShape2D` shapes on `PlayerShip`):
+    1. **Chassis / Spaceframe (Root):** Open orbital truss / spine / cage defining all sockets and internal Thermal Bus *(plus rare lore-variant "Earth-Salvage" clipped-wing budget airframes)*.
+    2. **Propellant Tank(s):** Spherical or pill-shaped cryogenic pressure vessels near Center of Mass.
+    3. **RC Receiver / Avionics Core:** Compact armored electronics box + antenna enforcing the drone's structural shock limit (e.g., `~150 G` destroys the receiver → remote link lost).
+    4. **Main Thruster Assembly:** Rear propulsion bell/core (prime impact zone during late flip-and-burn wall hits).
+    5. **6× RCS Thruster Pods:** Compact corner/retro blocks on lightweight outrigger struts.
+    6. **Symmetric Auxiliary Hardpoints (`AuxMountPort` / `AuxMountStarboard`):** Ready for Passive Radiators (extending outward), Active Slug Ejectors (flush armored pods), Shields, Chaff, and Weapons.
+* **Physics-Driven Impact G-Forces & Breakapart Debris (`_integrate_forces`):**
+  * Single `RigidBody2D` during normal flight (no unstable 2D physics joints under 30 G thrust).
+  * On wall contact, detect the exact struck part's `CollisionShape2D` and compute peak impact Gs.
+  * Mounts/parts exceeding their G-tolerance (well above max ~30 G flight thrust) shear off or explode (e.g., tail-first crash blows rear thruster), spawning independent zero-G `RigidBody2D` debris chunks inheriting `v_part = v_ship + ω × r_part` while removing their mass from the surviving hull.
+  * Exceeding the RC Receiver's G-limit (e.g. `150 G`) or losing a fatal core component triggers **DRONE LOST**.
+* **Checkpoint Drone Deployment (`Blink → READY → GO!`):**
+  * Wreckage continues drifting naturally in space while the camera repositions to the last cleared checkpoint (or Start line) and a fresh replacement drone blinks in with a quick `READY → GO!` lock.
 
 ### Track Technology Progression & Boundary Physics (Post-MVP Career Synergy)
 * **League Tech Escalation:** As the player progresses through higher-paying circuits in a generational run and unlocks faster ship tiers, the race venues themselves upgrade in track technology — changing both **visual aesthetic** and **how the ship physically interacts with track edges**:

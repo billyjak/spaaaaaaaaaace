@@ -8,6 +8,7 @@ const STANDARD_GRAVITY := 9.80665
 # part mass or radius is manually set to 0 in the Inspector.
 const MIN_TOTAL_MASS := 0.01
 const MIN_INERTIA := 0.01
+const ShipModuleScript = preload("res://ship_module.gd")
 
 # ---------------------------------------------------------------------------
 # Ship Loadout Presets (Small / Medium / Large)
@@ -21,6 +22,9 @@ const MIN_INERTIA := 0.01
 @export_enum("Small", "Medium", "Large") var starting_ship: int = 0
 ## Starting tech tier (1-4) for Hull, Engine, and RCS on launch.
 @export_range(1, 4) var starting_tier: int = 1
+## Optional hull scene override (e.g. ship_attempt.tscn) for testing modular blueprints
+## while keeping the selected ship class and tech tier stats.
+@export var test_hull_scene_override: PackedScene = null
 
 # ---------------------------------------------------------------------------
 # Installed Parts (Drag-and-drop .tres parts from res://parts/ to test!)
@@ -54,8 +58,8 @@ const MIN_INERTIA := 0.01
 @export var thrust_mass_exponent: float = 2.0 / 3.0
 ## Baseline 6-nozzle RCS system mass (kg) corresponding to reference_rcs_nozzle_thrust_n.
 @export var reference_rcs_mass: float = 20.0
-## Baseline thrust per individual RCS nozzle (N) at reference_rcs_mass (1.5 kN starter jets).
-@export var reference_rcs_nozzle_thrust_n: float = 1500.0
+## Baseline thrust per individual RCS nozzle (N) at reference_rcs_mass (300 N real-world hydrazine jets).
+@export var reference_rcs_nozzle_thrust_n: float = 300.0
 ## Square-cube scaling exponent for RCS nozzles (2/3 -> L^2 area / L^3 volume).
 @export var rcs_mass_exponent: float = 2.0 / 3.0
 ## World scale connecting SI meters to Godot 2D pixels (16 px/m -> 39 px Medium ship = ~2.4 m drone).
@@ -120,30 +124,30 @@ var _current_fuel_burn_rate: float = 0.0
 var _current_rcs_burn_rate: float = 0.0
 var _current_rcs_nozzle_thrust_n: float = 0.0
 var _current_rcs_torque: float = 0.0
+var _max_rcs_cw_torque: float = 0.0
+var _max_rcs_ccw_torque: float = 0.0
 var _current_rcs_linear_force: float = 0.0
 var _size_warnings: PackedStringArray = PackedStringArray()
 
 var _active_hull_node: Node2D = null
-var _active_collision: Node2D = null
+var _active_collisions: Array[Node2D] = []
+var _part_collider_map: Dictionary = {}
 var _exhaust_sprite: Sprite2D = null
 var _exhaust_base_scale: Vector2 = Vector2.ONE
 
-var _rcs_bow_port: Node2D = null
-var _rcs_bow_starboard: Node2D = null
-var _rcs_stern_port: Node2D = null
-var _rcs_stern_starboard: Node2D = null
-var _rcs_retro_port: Node2D = null
-var _rcs_retro_starboard: Node2D = null
+# Per-part geometry properties cached from modular hull Shape polygons. Each entry:
+#   "node": Node2D, "name": String, "role": int (ShipModule.ModuleRole),
+#   "hull_mass_weight": float, "area_m2": float, "centroid_m": Vector2,
+#   "i_cm_per_kg": float (moment of inertia per kg about part's own centroid)
+var _modular_parts: Array[Dictionary] = []
+var _aux_mount_positions_m: Array[Vector2] = []
+var _center_of_mass_m: Vector2 = Vector2.ZERO
 
-# Per-nozzle valve state: { "on": bool, "timer": float }
-var _rcs_valve_state: Dictionary = {
-	"bow_port": {"on": false, "timer": 0.0},
-	"bow_starboard": {"on": false, "timer": 0.0},
-	"stern_port": {"on": false, "timer": 0.0},
-	"stern_starboard": {"on": false, "timer": 0.0},
-	"retro_port": {"on": false, "timer": 0.0},
-	"retro_starboard": {"on": false, "timer": 0.0},
-}
+# Discovered RCS nozzles in ship-local space. Each entry stores:
+#   "node": Node2D, "name": String, "pos_px": Vector2, "pos_m": Vector2,
+#   "thrust_dir_local": Vector2, "unit_torque_per_n": float,
+#   "is_rotational": bool, "valve_on": bool, "valve_timer": float
+var _rcs_nozzles: Array[Dictionary] = []
 
 @onready var _telemetry_panel: Control = get_node_or_null("TelemetryLayer/TelemetryPanel")
 @onready var _telemetry_label: Label = get_node_or_null("TelemetryLayer/TelemetryPanel/TelemetryLabel")
@@ -415,64 +419,217 @@ func _compute_radiative_cooling_kw(heat_frac: float) -> float:
 	return _current_max_cooling_kw * rad_factor
 
 
+func _get_desired_hull_scene() -> PackedScene:
+	if test_hull_scene_override != null:
+		return test_hull_scene_override
+	return installed_hull.hull_scene if installed_hull != null else null
+
+
+func _get_transform_relative_to_ship(node: Node2D) -> Transform2D:
+	var xform := Transform2D.IDENTITY
+	var cur: Node = node
+	while cur != null and cur != self:
+		if cur is Node2D:
+			xform = (cur as Node2D).transform * xform
+		cur = cur.get_parent()
+	return xform
+
+
+func _find_first_node_by_name(root: Node, target_name: String) -> Node:
+	if root == null:
+		return null
+	for child in root.get_children():
+		if child.name == target_name:
+			return child
+		var found := _find_first_node_by_name(child, target_name)
+		if found != null:
+			return found
+	return null
+
+
+func _collect_rcs_nozzles(node: Node) -> void:
+	if node == null:
+		return
+	for child in node.get_children():
+		if child is Node2D and child.get_node_or_null("Plume") != null:
+			var nozzle_node := child as Node2D
+			var xform := _get_transform_relative_to_ship(nozzle_node)
+			var pos_px := xform.origin
+			var pos_m := pos_px / maxf(pixels_per_meter, 0.001)
+			# Exhaust plume shoots along local -Y (Vector2.UP), so Newton's 3rd law
+			# thrust acts along local +Y (Vector2.DOWN).
+			var thrust_dir_local := xform.basis_xform(Vector2.DOWN).normalized()
+			var unit_torque_per_n := pos_m.cross(thrust_dir_local)
+			var lever_len := pos_m.length()
+			var tangentiality := (absf(unit_torque_per_n) / lever_len) if lever_len > 0.001 else 0.0
+			var is_rotational := absf(unit_torque_per_n) > 0.01 and tangentiality >= 0.5
+			nozzle_node.visible = false
+			_rcs_nozzles.append({
+				"node": nozzle_node,
+				"name": String(nozzle_node.name),
+				"pos_px": pos_px,
+				"pos_m": pos_m,
+				"thrust_dir_local": thrust_dir_local,
+				"unit_torque_per_n": unit_torque_per_n,
+				"is_rotational": is_rotational,
+				"valve_on": false,
+				"valve_timer": 0.0,
+			})
+		else:
+			_collect_rcs_nozzles(child)
+
+
+func _compute_polygon_mass_properties(poly_px: PackedVector2Array) -> Dictionary:
+	var n := poly_px.size()
+	if n < 3:
+		return {"area_m2": 0.0, "centroid_m": Vector2.ZERO, "i_cm_per_kg": 0.0}
+
+	var inv_ppm := 1.0 / maxf(pixels_per_meter, 0.001)
+	var twice_area := 0.0
+	var centroid_acc := Vector2.ZERO
+	var j_origin_acc := 0.0
+
+	for i in n:
+		var a := poly_px[i] * inv_ppm
+		var b := poly_px[(i + 1) % n] * inv_ppm
+		var cross := a.cross(b)
+		twice_area += cross
+		centroid_acc += (a + b) * cross
+		j_origin_acc += cross * (a.dot(a) + a.dot(b) + b.dot(b))
+
+	var signed_area := 0.5 * twice_area
+	if absf(signed_area) < 1e-8:
+		var avg := Vector2.ZERO
+		for pt in poly_px:
+			avg += pt * inv_ppm
+		return {"area_m2": 0.0, "centroid_m": avg / float(n), "i_cm_per_kg": 0.0}
+
+	var centroid_m := centroid_acc / (6.0 * signed_area)
+	var j_origin := j_origin_acc / 12.0
+	# Parallel Axis Theorem back to the polygon's own centroid: I_cm / m = J_origin / A - |C|^2
+	var i_cm_per_kg := maxf((j_origin / signed_area) - centroid_m.length_squared(), 0.0)
+	return {
+		"area_m2": absf(signed_area),
+		"centroid_m": centroid_m,
+		"i_cm_per_kg": i_cm_per_kg,
+	}
+
+
+func _infer_module_role(part_node: Node2D) -> int:
+	if part_node is ShipModuleScript:
+		return int(part_node.role)
+	var lower := String(part_node.name).to_lower()
+	if lower.contains("fuel") or lower.contains("tank"):
+		return ShipModuleScript.ModuleRole.FUEL_TANK
+	if lower.contains("engine") or lower.contains("thruster"):
+		return ShipModuleScript.ModuleRole.MAIN_ENGINE
+	if lower.contains("transmitter") or lower.contains("receiver") or lower.contains("avionics"):
+		return ShipModuleScript.ModuleRole.TRANSMITTER
+	return ShipModuleScript.ModuleRole.STRUCTURE
+
+
 func _rebuild_hull_visuals() -> void:
-	# Immediately detach and free previous hull and reparented collision shape
-	if _active_collision != null:
-		remove_child(_active_collision)
-		_active_collision.queue_free()
-		_active_collision = null
+	# Immediately detach and free previous hull and reparented/generated collision shapes
+	for col in _active_collisions:
+		if is_instance_valid(col):
+			if col.get_parent() == self:
+				remove_child(col)
+			col.queue_free()
+	_active_collisions.clear()
+	_part_collider_map.clear()
+	_modular_parts.clear()
+	_aux_mount_positions_m.clear()
+	_center_of_mass_m = Vector2.ZERO
 
 	if _active_hull_node != null:
 		remove_child(_active_hull_node)
 		_active_hull_node.queue_free()
 		_active_hull_node = null
 
-	_loaded_hull_scene = installed_hull.hull_scene if installed_hull != null else null
+	_loaded_hull_scene = _get_desired_hull_scene()
 	_exhaust_sprite = null
 	_exhaust_base_scale = Vector2.ONE
-	_rcs_bow_port = null
-	_rcs_bow_starboard = null
-	_rcs_stern_port = null
-	_rcs_stern_starboard = null
-	_rcs_retro_port = null
-	_rcs_retro_starboard = null
+	_rcs_nozzles.clear()
 
 	if _loaded_hull_scene != null:
 		_active_hull_node = _loaded_hull_scene.instantiate() as Node2D
 		add_child(_active_hull_node)
 
-		# Reparent HullCollision directly under RigidBody2D so Godot physics uses it
+		# 1) Legacy single-collider hulls: reparent HullCollision (or any direct Collision* child)
+		var legacy_cols: Array[Node2D] = []
 		var hull_col: Node2D = _active_hull_node.get_node_or_null("HullCollision") as Node2D
-		if hull_col == null:
+		if hull_col != null:
+			legacy_cols.append(hull_col)
+		else:
 			for child in _active_hull_node.get_children():
 				if child is CollisionShape2D or child is CollisionPolygon2D:
-					hull_col = child
-					break
-		if hull_col != null:
-			var col_transform := hull_col.transform
-			_active_hull_node.remove_child(hull_col)
-			hull_col.owner = null
-			add_child(hull_col)
-			hull_col.transform = col_transform
-			_active_collision = hull_col
+					legacy_cols.append(child as Node2D)
 
-		_exhaust_sprite = _active_hull_node.get_node_or_null("ExhaustSprite") as Sprite2D
+		if not legacy_cols.is_empty():
+			for col in legacy_cols:
+				var col_transform := _get_transform_relative_to_ship(col)
+				col.get_parent().remove_child(col)
+				col.owner = null
+				add_child(col)
+				col.transform = col_transform
+				_active_collisions.append(col)
+		else:
+			# 2) Modular blueprints: auto-generate one CollisionPolygon2D per part's Shape Polygon2D
+			# and cache each part's centroid, area, and self-inertia for exact CoM & Moment of Inertia.
+			var inv_ppm := 1.0 / maxf(pixels_per_meter, 0.001)
+			for child in _active_hull_node.get_children():
+				if child is Marker2D and String(child.name).to_lower().begins_with("auxmount"):
+					var mx := _get_transform_relative_to_ship(child as Node2D)
+					_aux_mount_positions_m.append(mx.origin * inv_ppm)
+					continue
+				if not (child is Node2D):
+					continue
+				var part_node := child as Node2D
+				var shape_poly := part_node.get_node_or_null("Shape") as Polygon2D
+				if shape_poly == null or shape_poly.polygon.size() < 3:
+					continue
+				var xform := _get_transform_relative_to_ship(shape_poly)
+				var transformed_pts := PackedVector2Array()
+				transformed_pts.resize(shape_poly.polygon.size())
+				for idx in shape_poly.polygon.size():
+					transformed_pts[idx] = xform * shape_poly.polygon[idx]
+				var col_poly := CollisionPolygon2D.new()
+				col_poly.name = "%sCollision" % part_node.name
+				col_poly.polygon = transformed_pts
+				add_child(col_poly)
+				_active_collisions.append(col_poly)
+				_part_collider_map[col_poly] = part_node
+
+				var props := _compute_polygon_mass_properties(transformed_pts)
+				var role := _infer_module_role(part_node)
+				var weight: float
+				if part_node is ShipModuleScript:
+					weight = maxf(float(part_node.hull_mass_weight), 0.0)
+				else:
+					weight = 0.0 if role == ShipModuleScript.ModuleRole.MAIN_ENGINE else maxf(float(props["area_m2"]), 0.001)
+
+				_modular_parts.append({
+					"node": part_node,
+					"name": String(part_node.name),
+					"role": role,
+					"hull_mass_weight": weight,
+					"area_m2": float(props["area_m2"]),
+					"centroid_m": props["centroid_m"] as Vector2,
+					"i_cm_per_kg": float(props["i_cm_per_kg"]),
+				})
+
+		# Find ExhaustSprite anywhere inside the hull (supports both hull root and MainEngine/ExhaustSprite)
+		_exhaust_sprite = _find_first_node_by_name(_active_hull_node, "ExhaustSprite") as Sprite2D
 		if _exhaust_sprite != null:
 			_exhaust_base_scale = _exhaust_sprite.scale
 
-		_rcs_bow_port = _active_hull_node.get_node_or_null("BowPort") as Node2D
-		_rcs_bow_starboard = _active_hull_node.get_node_or_null("BowStarboard") as Node2D
-		_rcs_stern_port = _active_hull_node.get_node_or_null("SternPort") as Node2D
-		_rcs_stern_starboard = _active_hull_node.get_node_or_null("SternStarboard") as Node2D
-		_rcs_retro_port = _active_hull_node.get_node_or_null("RetroPort") as Node2D
-		_rcs_retro_starboard = _active_hull_node.get_node_or_null("RetroStarboard") as Node2D
-
-	for key in _rcs_valve_state.keys():
-		_rcs_valve_state[key]["on"] = false
-		_rcs_valve_state[key]["timer"] = 0.0
+		# Discover every mounted RCS nozzle recursively (any Node2D with a Plume child)
+		_collect_rcs_nozzles(_active_hull_node)
 
 	_update_exhaust_visual(0.0)
-	_update_rcs_visuals(0.0, Vector2.ZERO, 0.0)
+	var empty_throttles := PackedFloat32Array()
+	empty_throttles.resize(_rcs_nozzles.size())
+	_update_rcs_visuals(empty_throttles, 0.0)
 
 
 func _refresh_all_stats() -> void:
@@ -544,6 +701,119 @@ func _get_ship_parts() -> Array[Dictionary]:
 
 
 func _recalculate_mass_and_inertia() -> void:
+	# Modular hull path: real per-part Center of Mass + Parallel Axis Theorem Moment of Inertia
+	if not _modular_parts.is_empty():
+		var mass_elements: Array[Dictionary] = []
+		var hull_mass_kg := maxf(installed_hull.mass_kg, 0.0) if installed_hull != null else 0.0
+		var thruster_mass_kg := maxf(installed_thruster.mass_kg, 0.0) if installed_thruster != null else 0.0
+		var rcs_mass_kg := maxf(installed_rcs.mass_kg, 0.0) if installed_rcs != null else 0.0
+		var cur_fuel_kg := maxf(fuel_mass, 0.0)
+
+		var total_hull_weight := 0.0
+		var fuel_tank_count := 0
+		var main_engine_count := 0
+		for part in _modular_parts:
+			total_hull_weight += float(part["hull_mass_weight"])
+			var role: int = part["role"]
+			if role == ShipModuleScript.ModuleRole.FUEL_TANK:
+				fuel_tank_count += 1
+			elif role == ShipModuleScript.ModuleRole.MAIN_ENGINE:
+				main_engine_count += 1
+
+		# Distribute hull dry mass by explicit per-part weights, thruster mass onto MainEngine(s),
+		# and live fuel_mass onto FuelTank(s).
+		var dry := 0.0
+		for part in _modular_parts:
+			var role: int = part["role"]
+			var centroid_m: Vector2 = part["centroid_m"]
+			var i_cm_per_kg: float = part["i_cm_per_kg"]
+			var part_dry_kg := 0.0
+
+			if total_hull_weight > 0.0:
+				part_dry_kg += hull_mass_kg * (float(part["hull_mass_weight"]) / total_hull_weight)
+			if role == ShipModuleScript.ModuleRole.MAIN_ENGINE and main_engine_count > 0:
+				part_dry_kg += thruster_mass_kg / float(main_engine_count)
+
+			if part_dry_kg > 0.0:
+				dry += part_dry_kg
+				mass_elements.append({
+					"mass": part_dry_kg,
+					"pos_m": centroid_m,
+					"i_cm_per_kg": i_cm_per_kg,
+				})
+
+			if role == ShipModuleScript.ModuleRole.FUEL_TANK and fuel_tank_count > 0 and cur_fuel_kg > 0.0:
+				mass_elements.append({
+					"mass": cur_fuel_kg / float(fuel_tank_count),
+					"pos_m": centroid_m,
+					"i_cm_per_kg": i_cm_per_kg,
+				})
+
+		# Fallbacks if a custom modular blueprint omitted FuelTank or MainEngine roles
+		if main_engine_count == 0 and thruster_mass_kg > 0.0:
+			dry += thruster_mass_kg
+			mass_elements.append({"mass": thruster_mass_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
+		if fuel_tank_count == 0 and cur_fuel_kg > 0.0:
+			mass_elements.append({"mass": cur_fuel_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
+
+		# Distribute RCS system mass across each mounted RCS nozzle at its real mount position
+		if rcs_mass_kg > 0.0:
+			dry += rcs_mass_kg
+			if not _rcs_nozzles.is_empty():
+				var per_nozzle_kg := rcs_mass_kg / float(_rcs_nozzles.size())
+				for noz in _rcs_nozzles:
+					mass_elements.append({
+						"mass": per_nozzle_kg,
+						"pos_m": noz["pos_m"] as Vector2,
+						"i_cm_per_kg": 0.0,
+					})
+			else:
+				mass_elements.append({"mass": rcs_mass_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
+
+		# Distribute each installed aux part symmetrically across AuxMount* markers
+		# (e.g., paired port/starboard mounts) so symmetric gear stays balanced in CoM
+		# while still adding its real radial inertia at the mount distance.
+		for aux in installed_aux_parts:
+			if aux == null:
+				continue
+			var aux_kg := maxf(aux.mass_kg, 0.0)
+			if aux_kg <= 0.0:
+				continue
+			dry += aux_kg
+			if not _aux_mount_positions_m.is_empty():
+				var per_mount_kg := aux_kg / float(_aux_mount_positions_m.size())
+				for mount_pos_m in _aux_mount_positions_m:
+					mass_elements.append({"mass": per_mount_kg, "pos_m": mount_pos_m, "i_cm_per_kg": 0.0})
+			else:
+				mass_elements.append({"mass": aux_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
+
+		# 1) Total mass and exact Center of Mass
+		var total_mass := 0.0
+		var com_weighted := Vector2.ZERO
+		for el in mass_elements:
+			var m: float = el["mass"]
+			total_mass += m
+			com_weighted += (el["pos_m"] as Vector2) * m
+
+		_center_of_mass_m = (com_weighted / total_mass) if total_mass > MIN_TOTAL_MASS else Vector2.ZERO
+		center_of_mass_mode = RigidBody2D.CENTER_OF_MASS_MODE_CUSTOM
+		center_of_mass = _center_of_mass_m * pixels_per_meter
+
+		# 2) Exact Moment of Inertia via Parallel Axis Theorem: I = sum(m_i * (i_cm_i + |p_i - CoM|^2))
+		var total_inertia := 0.0
+		for el in mass_elements:
+			var m: float = el["mass"]
+			var d_sq: float = ((el["pos_m"] as Vector2) - _center_of_mass_m).length_squared()
+			total_inertia += m * (float(el["i_cm_per_kg"]) + d_sq)
+
+		_dry_mass = dry
+		mass = maxf(total_mass, MIN_TOTAL_MASS)
+		inertia = maxf(total_inertia, MIN_INERTIA)
+		return
+
+	# Legacy single-collider hull path: uniform-radius inertia approximation around origin
+	_center_of_mass_m = Vector2.ZERO
+	center_of_mass_mode = RigidBody2D.CENTER_OF_MASS_MODE_AUTO
 	var parts := _get_ship_parts()
 	var total_mass := 0.0
 	var total_inertia := 0.0
@@ -577,12 +847,48 @@ func _recalculate_propulsion() -> void:
 	else:
 		_current_rcs_nozzle_thrust_n = 0.0
 
-	# Symmetric RCS pairs equidistant (hull.rcs_lever_arm_m) from center of mass:
-	# - Rotation uses 2 opposing nozzles -> tau = 2 * F_nozzle * L
-	# - Linear braking uses 2 aligned nozzles -> F_linear = 2 * F_nozzle
-	var lever_arm := _get_rcs_lever_arm_m()
-	_current_rcs_torque = 2.0 * _current_rcs_nozzle_thrust_n * lever_arm
-	_current_rcs_linear_force = 2.0 * _current_rcs_nozzle_thrust_n
+	# Derive real RCS rotational & linear authority directly from every discovered nozzle
+	# relative to the ship's live Center of Mass (_center_of_mass_m).
+	# Falls back to symmetric 2-nozzle hull estimates only if a hull has no mounted nozzles.
+	if not _rcs_nozzles.is_empty():
+		var cw_tau := 0.0
+		var ccw_tau := 0.0
+		var max_axis_linear := 0.0
+		for nozzle in _rcs_nozzles:
+			var r_m: Vector2 = (nozzle["pos_m"] as Vector2) - _center_of_mass_m
+			var thrust_dir_local: Vector2 = nozzle["thrust_dir_local"]
+			var unit_tau := r_m.cross(thrust_dir_local)
+			var lever_len := r_m.length()
+			var tangentiality := (absf(unit_tau) / lever_len) if lever_len > 0.001 else 0.0
+			var is_rot := absf(unit_tau) > 0.01 and tangentiality >= 0.5
+			nozzle["unit_torque_per_n"] = unit_tau
+			nozzle["is_rotational"] = is_rot
+
+			if is_rot:
+				if unit_tau > 0.0:
+					cw_tau += unit_tau * _current_rcs_nozzle_thrust_n
+				elif unit_tau < 0.0:
+					ccw_tau += (-unit_tau) * _current_rcs_nozzle_thrust_n
+
+		# Sample cardinal axes to estimate linear RCS authority for HUD / braking availability
+		for dir in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:
+			var axis_n := 0.0
+			for nozzle in _rcs_nozzles:
+				var d: float = (nozzle["thrust_dir_local"] as Vector2).dot(dir)
+				if d > 0.1:
+					axis_n += d * _current_rcs_nozzle_thrust_n
+			max_axis_linear = maxf(max_axis_linear, axis_n)
+
+		_max_rcs_cw_torque = cw_tau
+		_max_rcs_ccw_torque = ccw_tau
+		_current_rcs_torque = maxf(cw_tau, ccw_tau)
+		_current_rcs_linear_force = max_axis_linear
+	else:
+		var lever_arm := _get_rcs_lever_arm_m()
+		_max_rcs_cw_torque = 2.0 * _current_rcs_nozzle_thrust_n * lever_arm
+		_max_rcs_ccw_torque = _max_rcs_cw_torque
+		_current_rcs_torque = _max_rcs_cw_torque
+		_current_rcs_linear_force = 2.0 * _current_rcs_nozzle_thrust_n
 
 	if installed_hull != null:
 		heat_capacity_kj = maxf(installed_hull.heat_capacity_kj, 1.0)
@@ -620,8 +926,8 @@ func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("toggle_rotational_stabilization"):
 		rotational_stabilize = not rotational_stabilize
 
-	# Support live drag-and-drop HullPart replacement in Remote Inspector
-	var desired_scene: PackedScene = installed_hull.hull_scene if installed_hull != null else null
+	# Support live drag-and-drop HullPart or override scene replacement in Remote Inspector
+	var desired_scene: PackedScene = _get_desired_hull_scene()
 	if desired_scene != _loaded_hull_scene:
 		_rebuild_hull_visuals()
 
@@ -709,19 +1015,30 @@ func _physics_process(delta: float) -> void:
 				elif _current_rcs_linear_force > 0.0:
 					var speed_m_s: float = speed / maxf(pixels_per_meter, 0.001)
 					var force_to_stop_n: float = speed_m_s * mass / delta
-					desired_rcs_linear_n = minf(_current_rcs_linear_force, force_to_stop_n)
+					desired_rcs_linear_n = force_to_stop_n
 					if desired_rcs_linear_n > 0.0:
 						desired_rcs_linear_dir_world = -vel_dir
 			elif fuel_mass > 0.0:
 				linear_velocity = Vector2.ZERO
 
+	# Allocate per-nozzle RCS throttles (works for any N-nozzle geometry: 8-nozzle X-frame,
+	# 6-nozzle legacy hulls, double-truss, or asymmetric damaged craft).
+	var desired_rcs_linear_dir_local := (
+		desired_rcs_linear_dir_world.rotated(-rotation).normalized()
+		if desired_rcs_linear_dir_world.length_squared() > 0.0
+		else Vector2.ZERO
+	)
+	var rcs_throttles := _allocate_rcs_nozzles(
+		desired_rcs_torque, desired_rcs_linear_n, desired_rcs_linear_dir_local
+	)
+
 	# Compute combined propellant draw from shared fuel_mass for both main engine & RCS
-	var applied_rcs_torque := 0.0
-	var applied_rcs_linear_dir_world := Vector2.ZERO
 	_current_applied_thrust_n = 0.0
 	_current_fuel_burn_rate = 0.0
 	_current_rcs_burn_rate = 0.0
 	var active_throttle := 0.0
+	var applied_rcs_throttles := PackedFloat32Array()
+	applied_rcs_throttles.resize(_rcs_nozzles.size())
 
 	var clamped_throttle := clampf(main_throttle, 0.0, 1.0)
 	var ob_thrust_mult := (
@@ -737,9 +1054,15 @@ func _physics_process(delta: float) -> void:
 
 	var base_main_thrust_n := (_current_max_thrust_n * clamped_throttle) if (clamped_throttle > 0.0 and _current_max_thrust_n > 0.0) else 0.0
 	var desired_main_thrust_n := base_main_thrust_n * ob_thrust_mult
-	var lever_arm := _get_rcs_lever_arm_m()
-	var rotational_rcs_thrust_n := (absf(desired_rcs_torque) / lever_arm) if lever_arm > 0.0 else 0.0
-	var total_desired_rcs_thrust_n := rotational_rcs_thrust_n + desired_rcs_linear_n
+
+	var total_desired_rcs_thrust_n := 0.0
+	if not _rcs_nozzles.is_empty():
+		for t in rcs_throttles:
+			total_desired_rcs_thrust_n += t * _current_rcs_nozzle_thrust_n
+	else:
+		var lever_arm := _get_rcs_lever_arm_m()
+		var rotational_rcs_thrust_n := (absf(desired_rcs_torque) / lever_arm) if lever_arm > 0.0 else 0.0
+		total_desired_rcs_thrust_n = rotational_rcs_thrust_n + minf(desired_rcs_linear_n, _current_rcs_linear_force)
 
 	var main_isp := installed_thruster.specific_impulse if installed_thruster != null else 310.0
 	var rcs_isp := installed_rcs.specific_impulse if installed_rcs != null else 260.0
@@ -761,12 +1084,31 @@ func _physics_process(delta: float) -> void:
 
 		if desired_rcs_burn_rate > 0.0:
 			_current_rcs_burn_rate = desired_rcs_burn_rate * burn_fraction
-			if absf(desired_rcs_torque) > 0.0:
-				applied_rcs_torque = desired_rcs_torque * burn_fraction
-				apply_torque(applied_rcs_torque)
-			if desired_rcs_linear_n > 0.0:
-				applied_rcs_linear_dir_world = desired_rcs_linear_dir_world
-				apply_central_force(applied_rcs_linear_dir_world * (desired_rcs_linear_n * burn_fraction) * pixels_per_meter)
+			if not _rcs_nozzles.is_empty():
+				# Sum exact SI force (N) and SI torque (N*m) across every firing nozzle so
+				# Godot's pixel-scaled apply_central_force never creates a 256x torque error.
+				var total_rcs_force_local_n := Vector2.ZERO
+				var total_rcs_torque_nm := 0.0
+				for i in _rcs_nozzles.size():
+					var t: float = rcs_throttles[i] * burn_fraction
+					applied_rcs_throttles[i] = t
+					if t <= 0.0:
+						continue
+					var nozzle: Dictionary = _rcs_nozzles[i]
+					var f_n: float = _current_rcs_nozzle_thrust_n * t
+					total_rcs_force_local_n += (nozzle["thrust_dir_local"] as Vector2) * f_n
+					total_rcs_torque_nm += float(nozzle["unit_torque_per_n"]) * f_n
+
+				if total_rcs_force_local_n.length_squared() > 0.0:
+					apply_central_force(total_rcs_force_local_n.rotated(rotation) * pixels_per_meter)
+				if absf(total_rcs_torque_nm) > 0.0:
+					apply_torque(total_rcs_torque_nm)
+			else:
+				if absf(desired_rcs_torque) > 0.0:
+					apply_torque(desired_rcs_torque * burn_fraction)
+				if desired_rcs_linear_n > 0.0:
+					var lin_n := minf(desired_rcs_linear_n, _current_rcs_linear_force) * burn_fraction
+					apply_central_force(desired_rcs_linear_dir_world * lin_n * pixels_per_meter)
 
 		if desired_main_burn_rate > 0.0:
 			_current_applied_thrust_n = desired_main_thrust_n * burn_fraction
@@ -794,8 +1136,85 @@ func _physics_process(delta: float) -> void:
 		overburn_locked_out = false
 
 	_update_exhaust_visual(active_throttle, is_overburning)
-	_update_rcs_visuals(applied_rcs_torque, applied_rcs_linear_dir_world, delta)
+	_update_rcs_visuals(applied_rcs_throttles, delta)
 	_update_telemetry()
+
+
+func _allocate_rcs_nozzles(
+	desired_torque_nm: float, desired_linear_n: float, linear_dir_local: Vector2
+) -> PackedFloat32Array:
+	var count := _rcs_nozzles.size()
+	var throttles := PackedFloat32Array()
+	throttles.resize(count)
+	if count == 0 or _current_rcs_nozzle_thrust_n <= 0.0:
+		return throttles
+
+	# 1) Rotational allocation (pure CW or CCW spin across tangential nozzles)
+	if desired_torque_nm > 0.0 and _max_rcs_cw_torque > 0.0:
+		var rot_frac := clampf(desired_torque_nm / _max_rcs_cw_torque, 0.0, 1.0)
+		for i in count:
+			var nozzle: Dictionary = _rcs_nozzles[i]
+			if nozzle["is_rotational"] and float(nozzle["unit_torque_per_n"]) > 0.0:
+				throttles[i] = rot_frac
+	elif desired_torque_nm < 0.0 and _max_rcs_ccw_torque > 0.0:
+		var rot_frac := clampf(-desired_torque_nm / _max_rcs_ccw_torque, 0.0, 1.0)
+		for i in count:
+			var nozzle: Dictionary = _rcs_nozzles[i]
+			if nozzle["is_rotational"] and float(nozzle["unit_torque_per_n"]) < 0.0:
+				throttles[i] = rot_frac
+
+	# 2) Torque-balanced linear allocation across all 360 deg directions
+	if desired_linear_n > 0.0 and linear_dir_local.length_squared() > 0.0001:
+		var weights := PackedFloat32Array()
+		weights.resize(count)
+		var tau_pos := 0.0
+		var tau_neg := 0.0
+
+		for i in count:
+			var nozzle: Dictionary = _rcs_nozzles[i]
+			var align: float = (nozzle["thrust_dir_local"] as Vector2).dot(linear_dir_local)
+			if align > 0.1:
+				weights[i] = align
+				var u_tau: float = nozzle["unit_torque_per_n"]
+				if u_tau > 0.001:
+					tau_pos += align * u_tau
+				elif u_tau < -0.001:
+					tau_neg += align * (-u_tau)
+
+		# Balance CW vs CCW torque contributions so linear braking induces zero net spin
+		if tau_pos > 0.0001 and tau_neg > 0.0001:
+			if tau_pos > tau_neg:
+				var cw_scale := tau_neg / tau_pos
+				for i in count:
+					if float(_rcs_nozzles[i]["unit_torque_per_n"]) > 0.001:
+						weights[i] *= cw_scale
+			elif tau_neg > tau_pos:
+				var ccw_scale := tau_pos / tau_neg
+				for i in count:
+					if float(_rcs_nozzles[i]["unit_torque_per_n"]) < -0.001:
+						weights[i] *= ccw_scale
+		elif tau_pos > 0.0001 or tau_neg > 0.0001:
+			# Only one rotational sign available; keep only zero-torque nozzles if any exist
+			for i in count:
+				if absf(float(_rcs_nozzles[i]["unit_torque_per_n"])) > 0.001:
+					weights[i] = 0.0
+
+		var achieved_n := 0.0
+		var max_w := 0.0
+		for i in count:
+			var w: float = weights[i]
+			if w > 0.0:
+				var align: float = ( _rcs_nozzles[i]["thrust_dir_local"] as Vector2 ).dot(linear_dir_local)
+				achieved_n += w * _current_rcs_nozzle_thrust_n * align
+				max_w = maxf(max_w, w)
+
+		if achieved_n > 0.0001 and max_w > 0.0001:
+			var lin_scale := minf(desired_linear_n / achieved_n, 1.0 / max_w)
+			for i in count:
+				if weights[i] > 0.0:
+					throttles[i] = clampf(throttles[i] + weights[i] * lin_scale, 0.0, 1.0)
+
+	return throttles
 
 
 func _update_exhaust_visual(throttle: float, overburning: bool = false) -> void:
@@ -812,10 +1231,9 @@ func _update_exhaust_visual(throttle: float, overburning: bool = false) -> void:
 		_exhaust_sprite.modulate = Color(1.35, 1.45, 1.65, 1.0) if overburning else Color.WHITE
 
 
-func _step_rcs_valve(nozzle_key: String, desired_on: bool, delta: float) -> bool:
-	var state: Dictionary = _rcs_valve_state[nozzle_key]
-	var is_on: bool = state["on"]
-	var timer: float = maxf(state["timer"] - delta, 0.0)
+func _step_rcs_valve(nozzle: Dictionary, desired_on: bool, delta: float) -> bool:
+	var is_on: bool = nozzle["valve_on"]
+	var timer: float = maxf(float(nozzle["valve_timer"]) - delta, 0.0)
 
 	if is_on:
 		# Stay open for at least rcs_min_on_time, and remain open continuously while commanded.
@@ -828,49 +1246,22 @@ func _step_rcs_valve(nozzle_key: String, desired_on: bool, delta: float) -> bool
 			is_on = true
 			timer = maxf(rcs_min_on_time, 0.0)
 
-	state["on"] = is_on
-	state["timer"] = timer
+	nozzle["valve_on"] = is_on
+	nozzle["valve_timer"] = timer
 	return is_on
 
 
 # RCS thrusters are strictly boolean (on/off, never scaled) with minimum valve
 # pulse & cooldown durations so they never strobe at the 60 Hz physics tick rate.
-func _update_rcs_visuals(torque_applied: float, linear_dir_world: Vector2, delta: float) -> void:
-	var torque_threshold := _current_rcs_torque * maxf(rcs_visual_torque_threshold, 0.0)
-	var spin_cw := _current_rcs_torque > 0.0 and torque_applied > torque_threshold
-	var spin_ccw := _current_rcs_torque > 0.0 and torque_applied < -torque_threshold
-
-	var push_starboard := false
-	var push_port := false
-	var push_retro := false
-
-	if linear_dir_world != Vector2.ZERO:
-		# Convert desired push direction into ship-local space:
-		# +X = Starboard (right), -X = Port (left), +Y = Aft (retrograde brake)
-		var local_push := linear_dir_world.rotated(-rotation)
-		push_starboard = local_push.x > 0.25
-		push_port = local_push.x < -0.25
-		push_retro = local_push.y > 0.25
-
-	var bow_port_on := _step_rcs_valve("bow_port", spin_cw or push_starboard, delta)
-	var bow_starboard_on := _step_rcs_valve("bow_starboard", spin_ccw or push_port, delta)
-	var stern_port_on := _step_rcs_valve("stern_port", spin_ccw or push_starboard, delta)
-	var stern_starboard_on := _step_rcs_valve("stern_starboard", spin_cw or push_port, delta)
-	var retro_port_on := _step_rcs_valve("retro_port", push_retro, delta)
-	var retro_starboard_on := _step_rcs_valve("retro_starboard", push_retro, delta)
-
-	if _rcs_bow_port:
-		_rcs_bow_port.visible = bow_port_on
-	if _rcs_bow_starboard:
-		_rcs_bow_starboard.visible = bow_starboard_on
-	if _rcs_stern_port:
-		_rcs_stern_port.visible = stern_port_on
-	if _rcs_stern_starboard:
-		_rcs_stern_starboard.visible = stern_starboard_on
-	if _rcs_retro_port:
-		_rcs_retro_port.visible = retro_port_on
-	if _rcs_retro_starboard:
-		_rcs_retro_starboard.visible = retro_starboard_on
+func _update_rcs_visuals(applied_throttles: PackedFloat32Array, delta: float) -> void:
+	var threshold := maxf(rcs_visual_torque_threshold, 0.0)
+	for i in _rcs_nozzles.size():
+		var nozzle: Dictionary = _rcs_nozzles[i]
+		var nozzle_node: Node2D = nozzle["node"]
+		var desired_on := i < applied_throttles.size() and applied_throttles[i] > threshold
+		var is_on := _step_rcs_valve(nozzle, desired_on, delta)
+		if is_instance_valid(nozzle_node):
+			nozzle_node.visible = is_on
 
 
 func _update_telemetry() -> void:
@@ -928,7 +1319,7 @@ func _update_telemetry() -> void:
 		+ "HEAT: %.0f%% (%.0f K) | RAD: %.1f/%.0f kW%s\n"
 		+ "MASS: %.1f kg (Dry: %.1f kg)\n"
 		+ "INERTIA: %.1f kg·m² | TURN: %.1f rad/s²\n"
-		+ "RCS: %.2f kN/noz × %.1fm = %.1f kN·m\n"
+		+ "RCS (%d noz): %.2f kN/noz | %.2f kN·m\n"
 		+ "MAX THRUST: %.2f kN (%.2f G max)\n"
 		+ "BURN: %.2f main / %.2f rcs kg/s | ACCEL: %.2f G\n"
 		+ "SPEED: %.1f m/s%s%s"
@@ -949,8 +1340,8 @@ func _update_telemetry() -> void:
 		_dry_mass,
 		inertia,
 		max_turn_accel,
+		_rcs_nozzles.size(),
 		_current_rcs_nozzle_thrust_n / 1000.0,
-		_get_rcs_lever_arm_m(),
 		_current_rcs_torque / 1000.0,
 		_current_max_thrust_n / 1000.0,
 		max_accel_g,

@@ -1,7 +1,7 @@
 [gd_resource type="Resource" script_class="HullPart" format=3 uid="uid://se3y70bskfuv"]
 
 [ext_resource type="Script" uid="uid://bf6npxdu2t8rh" path="res://parts/hull_part.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://cxy8dp1cklx6u" path="res://hull_small.tscn" id="2_scene"]
+[ext_resource type="PackedScene" uid="uid://b3jl7ngckls1j" path="res://ship_attempt.tscn" id="2_scene"]
 
 [resource]
 script = ExtResource("1_script")

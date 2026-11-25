@@ -1,0 +1,129 @@
+[gd_scene format=3]
+
+[ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="1_exhaust"]
+[ext_resource type="PackedScene" uid="uid://cw4l15bsacdbo" path="res://rcs_thruster_large.tscn" id="2_rcs"]
+[ext_resource type="Script" path="res://ship_module.gd" id="3_module"]
+
+[node name="ShipXFrameLarge" type="Node2D"]
+
+[node name="FuelTank" type="Node2D" parent="."]
+z_index = 1
+script = ExtResource("3_module")
+role = 1
+hull_mass_weight = 40.0
+
+[node name="Shape" type="Polygon2D" parent="FuelTank"]
+z_index = 3
+color = Color(0.76, 0.8, 0.86, 1)
+polygon = PackedVector2Array(15, 0, 13.8582, 5.74025, 10.6066, 10.6066, 5.74025, 13.8582, 0, 15, -5.74025, 13.8582, -10.6066, 10.6066, -13.8582, 5.74025, -15, 0, -13.8582, -5.74025, -10.6066, -10.6066, -5.74025, -13.8582, 0, -15, 5.74025, -13.8582, 10.6066, -10.6066, 13.8582, -5.74025)
+
+[node name="Transmitter" type="Node2D" parent="."]
+z_index = 2
+position = Vector2(0, -18.75)
+script = ExtResource("3_module")
+role = 3
+hull_mass_weight = 16.0
+
+[node name="Shape" type="Polygon2D" parent="Transmitter"]
+color = Color(0.28, 0.35, 0.44, 1)
+polygon = PackedVector2Array(-7, -6.25, 7, -6.25, 7, 6.25, -7, 6.25)
+
+[node name="StatusLED" type="Polygon2D" parent="Transmitter"]
+position = Vector2(3.5, -2)
+color = Color(0.25, 1, 0.45, 1)
+polygon = PackedVector2Array(-1.5, -1.5, 1.5, -1.5, 1.5, 1.5, -1.5, 1.5)
+
+[node name="MainEngine" type="Node2D" parent="."]
+position = Vector2(0, 22.5)
+script = ExtResource("3_module")
+role = 2
+hull_mass_weight = 0.0
+
+[node name="Shape" type="Polygon2D" parent="MainEngine"]
+z_index = 1
+color = Color(0.45, 0.48, 0.54, 1)
+polygon = PackedVector2Array(0, -10, 9.5, 11.25, -9.5, 11.25)
+
+[node name="ExhaustSprite" type="Sprite2D" parent="MainEngine"]
+position = Vector2(0, 22.5)
+rotation = 3.1415927
+scale = Vector2(1.11, 1.11)
+texture = ExtResource("1_exhaust")
+
+[node name="TrussNE" type="Node2D" parent="."]
+position = Vector2(8.75, -8.75)
+rotation = 0.7853982
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussNE"]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-3, 1.25, 3, 1.25, 3, -28.75, -3, -28.75)
+
+[node name="RcsCW" parent="TrussNE" instance=ExtResource("2_rcs")]
+position = Vector2(-9.9, -26.25)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussNE" instance=ExtResource("2_rcs")]
+position = Vector2(9.9, -26.25)
+rotation = 1.5707964
+
+[node name="TrussSE" type="Node2D" parent="."]
+position = Vector2(8.75, 8.75)
+rotation = 2.3561945
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussSE"]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-3, 1.25, 3, 1.25, 3, -28.75, -3, -28.75)
+
+[node name="RcsCW" parent="TrussSE" instance=ExtResource("2_rcs")]
+position = Vector2(-9.9, -26.25)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussSE" instance=ExtResource("2_rcs")]
+position = Vector2(9.9, -26.25)
+rotation = 1.5707964
+
+[node name="TrussSW" type="Node2D" parent="."]
+position = Vector2(-8.75, 8.75)
+rotation = -2.3561945
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussSW"]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-3, 1.25, 3, 1.25, 3, -28.75, -3, -28.75)
+
+[node name="RcsCW" parent="TrussSW" instance=ExtResource("2_rcs")]
+position = Vector2(-9.9, -26.25)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussSW" instance=ExtResource("2_rcs")]
+position = Vector2(9.9, -26.25)
+rotation = 1.5707964
+
+[node name="TrussNW" type="Node2D" parent="."]
+position = Vector2(-8.75, -8.75)
+rotation = -0.7853982
+script = ExtResource("3_module")
+hull_mass_weight = 11.0
+
+[node name="Shape" type="Polygon2D" parent="TrussNW"]
+color = Color(0.55, 0.6, 0.66, 1)
+polygon = PackedVector2Array(-3, 1.25, 3, 1.25, 3, -28.75, -3, -28.75)
+
+[node name="RcsCW" parent="TrussNW" instance=ExtResource("2_rcs")]
+position = Vector2(-9.9, -26.25)
+rotation = -1.5707964
+
+[node name="RcsCCW" parent="TrussNW" instance=ExtResource("2_rcs")]
+position = Vector2(9.9, -26.25)
+rotation = 1.5707964
+
+[node name="AuxMountPort" type="Marker2D" parent="."]
+position = Vector2(-16.25, 0)
+
+[node name="AuxMountStarboard" type="Marker2D" parent="."]
+position = Vector2(16.25, 0)

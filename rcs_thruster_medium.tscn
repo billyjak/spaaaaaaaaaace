@@ -3,6 +3,7 @@
 [ext_resource type="Texture2D" uid="uid://2gt3xcx1u7rd" path="res://resources/kenney_space-shooter-extension/PNG/Sprites X2/Effects/spaceEffects_018.png" id="1_o412m"]
 
 [node name="RcsThrusterMedium" type="Node2D" unique_id=1924505331]
+scale = Vector2(0.55, 0.55)
 
 [node name="Plume" type="Sprite2D" parent="." unique_id=1222157214]
 self_modulate = Color(18.892, 18.892, 18.892, 1)
