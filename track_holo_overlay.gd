@@ -22,7 +22,7 @@ var active_checkpoint_index: int = 0
 
 var chevron_color: Color = Color(0.38, 0.88, 1.0, 0.22)
 var cyan_emitter_color: Color = Color(0.32, 0.90, 1.0, 0.95)
-var amber_emitter_color: Color = Color(1.0, 0.80, 0.32, 0.98)
+var amber_emitter_color: Color = Color(0.90, 0.64, 0.38, 0.92)
 var buoy_body_color: Color = Color(0.11, 0.15, 0.22, 0.95)
 var buoy_trim_color: Color = Color(0.45, 0.62, 0.78, 0.85)
 
@@ -130,9 +130,9 @@ func _draw_warning_kerbs(wall_pts: PackedVector2Array, warn_vals: PackedFloat32A
 			continue
 		var a := wall_pts[i]
 		var b := wall_pts[next_i]
-		# Soft light-amber halo + bright inner golden core
-		draw_line(a, b, Color(1.0, 0.70, 0.22, 0.30 * w), 14.0, true)
-		draw_line(a, b, Color(1.0, 0.88, 0.48, 0.88 * w), 4.2, true)
+		# Subtle desaturated-amber apex highlight (no over-saturation)
+		draw_line(a, b, Color(0.88, 0.58, 0.32, 0.16 * w), 11.0, true)
+		draw_line(a, b, Color(0.96, 0.78, 0.56, 0.48 * w), 3.4, true)
 
 
 func _draw_start_finish_gate() -> void:
@@ -193,12 +193,29 @@ func _draw_start_finish_gate() -> void:
 		draw_circle(end_pt, 3.5, Color(0.70, 1.0, 0.90, 1.0))
 
 
-func _eval_luminous_ramp(blue_col: Color, orange_col: Color, t_orange: float) -> Color:
-	var t := clampf(t_orange, 0.0, 1.0)
-	var mid_col := Color(0.84, 0.94, 0.78, lerpf(blue_col.a, orange_col.a, 0.5))
-	if t < 0.5:
-		return blue_col.lerp(mid_col, t * 2.0)
-	return mid_col.lerp(orange_col, (t - 0.5) * 2.0)
+func _eval_luminous_ramp(blue_col: Color, amber_col: Color, t_amber: float) -> Color:
+	var u := clampf(t_amber, 0.0, 1.0)
+	if u <= 0.0001:
+		return blue_col
+	if u >= 0.9999:
+		return amber_col
+	var target_v := lerpf(blue_col.v, amber_col.v, u)
+	var target_a := lerpf(blue_col.a, amber_col.a, u)
+	var c1 := Color(0.50, 0.82, 0.96, target_a)
+	var c2 := Color(0.86, 0.80, 0.66, target_a)
+	var c3 := Color(0.90, 0.68, 0.44, target_a)
+	var out_col: Color
+	if u < 0.16:
+		out_col = blue_col.lerp(c1, u / 0.16)
+	elif u < 0.45:
+		out_col = c1.lerp(c2, (u - 0.16) / 0.29)
+	elif u < 0.75:
+		out_col = c2.lerp(c3, (u - 0.45) / 0.30)
+	else:
+		out_col = c3.lerp(amber_col, (u - 0.75) / 0.25)
+	out_col.v = target_v
+	out_col.a = target_a
+	return out_col
 
 
 func _draw_projector_buoy(pos: Vector2, tangent: Vector2, inward: Vector2, warn: float) -> void:

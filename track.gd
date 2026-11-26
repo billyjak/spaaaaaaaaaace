@@ -58,8 +58,8 @@ const TRACK_TYPE_COUNT: int = 4
 @export var surface_mid_color: Color = Color(0.04, 0.36, 0.78, 0.14)
 ## Ultra-sheer blue center tint so the Milky Way and 3D background shine cleanly through.
 @export var surface_center_color: Color = Color(0.02, 0.22, 0.52, 0.06)
-## Bright golden-amber edge color for slow turns (100% Amber along the course edges).
-@export var hairpin_warn_edge_color: Color = Color(1.0, 0.72, 0.24, 0.44)
+## Soft, desaturated amber edge color for slow turns (calm and balanced against the blue rail).
+@export var hairpin_warn_edge_color: Color = Color(0.86, 0.54, 0.26, 0.34)
 ## Bend radius (px) below which a turn is marked as a full 100% Amber slow corner.
 @export var corner_warn_radius_px: float = 950.0
 ## Reference acceleration (px/s^2) used to find the flip-and-burn midpoint peak (~3.0 G).
@@ -1227,15 +1227,53 @@ func _smoothstep_range(edge0: float, edge1: float, x: float) -> float:
 	return t * t * (3.0 - 2.0 * t)
 
 
-# Luminous Blue (0.0) <-> Light Amber (1.0) color ramp routed through a soft warm-ice
-# midpoint so complementary Blue and Amber stay bright and clean instead of muddy gray.
-func _eval_pacing_color(blue_col: Color, orange_col: Color, orange_t: float) -> Color:
-	var t := clampf(orange_t, 0.0, 1.0)
-	var mid_alpha := lerpf(blue_col.a, orange_col.a, 0.5)
-	var mid_col := Color(0.84, 0.94, 0.78, mid_alpha)
-	if t < 0.5:
-		return blue_col.lerp(mid_col, t * 2.0)
-	return mid_col.lerp(orange_col, (t - 0.5) * 2.0)
+# Smooth continuous Blue (0.0) <-> Soft Amber (1.0) spectrum.
+# Moves quickly past the perceptual blue dead-zone right off the midpoint (u=0.0->0.16),
+# then progresses evenly through pale sky-blue -> warm sand -> light amber -> soft amber,
+# preserving smooth brightness and alpha across bloom, glow, core rail, and surface edges.
+func _eval_pacing_color(blue_col: Color, amber_col: Color, amber_t: float) -> Color:
+	var u := clampf(amber_t, 0.0, 1.0)
+	if u <= 0.0001:
+		return blue_col
+	if u >= 0.9999:
+		return amber_col
+
+	var target_v := lerpf(blue_col.v, amber_col.v, u)
+	var target_a := lerpf(blue_col.a, amber_col.a, u)
+
+	var c1 := Color(0.50, 0.82, 0.96, target_a)
+	var c2 := Color(0.86, 0.80, 0.66, target_a)
+	var c3 := Color(0.90, 0.68, 0.44, target_a)
+
+	var out_col: Color
+	if u < 0.16:
+		var k := u / 0.16
+		var c1_scaled := Color(c1.r, c1.g, c1.b, target_a)
+		c1_scaled.v = lerpf(blue_col.v, amber_col.v, 0.16)
+		out_col = blue_col.lerp(c1_scaled, k)
+	elif u < 0.45:
+		var k := (u - 0.16) / 0.29
+		var a_col := c1
+		a_col.v = lerpf(blue_col.v, amber_col.v, 0.16)
+		var b_col := c2
+		b_col.v = lerpf(blue_col.v, amber_col.v, 0.45)
+		out_col = a_col.lerp(b_col, k)
+	elif u < 0.75:
+		var k := (u - 0.45) / 0.30
+		var a_col := c2
+		a_col.v = lerpf(blue_col.v, amber_col.v, 0.45)
+		var b_col := c3
+		b_col.v = lerpf(blue_col.v, amber_col.v, 0.75)
+		out_col = a_col.lerp(b_col, k)
+	else:
+		var k := (u - 0.75) / 0.25
+		var a_col := c3
+		a_col.v = lerpf(blue_col.v, amber_col.v, 0.75)
+		out_col = a_col.lerp(amber_col, k)
+
+	out_col.v = target_v
+	out_col.a = target_a
+	return out_col
 
 
 # Statically bakes the 2-color Blue <-> Orange pacing gradient around the closed loop:
@@ -1292,7 +1330,8 @@ func _compute_pacing_zones() -> void:
 	# 2. Forward acceleration pass & backward braking pass -> exact v_opt speed profile
 	var a_accel := maxf(pacing_ref_accel_px, 100.0)
 	var a_lat := a_accel * 0.72
-	var a_brake := a_accel * 0.85
+	# 0.80 * a_accel places the flip-and-burn peak right around ~45% down a straight
+	var a_brake := a_accel * 0.80
 	var v_cap := 2400.0
 
 	var v_corner := PackedFloat32Array()
@@ -1635,19 +1674,19 @@ func _apply_visuals() -> void:
 	# 2. Build 2-color edge-faded translucent pacing ArrayMesh
 	_rebuild_surface_mesh(outer_warn, inner_warn)
 
-	# 3. Layered glowing energy barrier walls tinted along the Blue <-> Light Amber pacing gradient
+	# 3. Layered glowing energy barrier walls tinted along the smooth Blue <-> Soft Amber spectrum
 	var bloom_accel := Color(0.06, 0.45, 0.98, 0.22)
-	var bloom_brake := Color(1.0, 0.72, 0.22, 0.28)
+	var bloom_brake := Color(0.86, 0.52, 0.24, 0.18)
 
 	var glow_accel := Color(0.18, 0.78, 1.0, 0.52)
-	var glow_brake := Color(1.0, 0.80, 0.34, 0.64)
+	var glow_brake := Color(0.88, 0.56, 0.28, 0.44)
 
-	var core_accel := Color(0.84, 0.97, 1.0, 0.96)
-	var core_brake := Color(1.0, 0.94, 0.70, 0.98)
+	var core_accel := Color(0.56, 0.88, 1.0, 0.96)
+	var core_brake := Color(0.96, 0.76, 0.54, 0.94)
 
-	var warn_bloom := Color(1.0, 0.74, 0.26, 0.34)
-	var warn_glow := Color(1.0, 0.84, 0.40, 0.72)
-	var warn_core := Color(1.0, 0.95, 0.74, 1.0)
+	var warn_bloom := Color(0.86, 0.52, 0.24, 0.22)
+	var warn_glow := Color(0.90, 0.58, 0.30, 0.48)
+	var warn_core := Color(0.96, 0.78, 0.56, 0.94)
 
 	var outer_bloom_grad := _build_wall_gradient(outer_points, pacing_outer_amber, bloom_accel, bloom_brake, outer_warn, warn_bloom)
 	var inner_bloom_grad := _build_wall_gradient(inner_points, pacing_inner_amber, bloom_accel, bloom_brake, inner_warn, warn_bloom)
