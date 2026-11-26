@@ -77,6 +77,8 @@ var camera_rail_points: PackedVector2Array = PackedVector2Array()
 var outer_points: PackedVector2Array = PackedVector2Array()
 var inner_points: PackedVector2Array = PackedVector2Array()
 var pacing_brake: PackedFloat32Array = PackedFloat32Array()
+var pacing_outer_amber: PackedFloat32Array = PackedFloat32Array()
+var pacing_inner_amber: PackedFloat32Array = PackedFloat32Array()
 var track_length_px: float = 0.0
 var total_track_turn_rad: float = 0.0
 var _centerline_cum_dist: PackedFloat32Array = PackedFloat32Array()
@@ -1248,28 +1250,44 @@ func _eval_pacing_color(blue_col: Color, orange_col: Color, orange_t: float) -> 
 func _compute_pacing_zones() -> void:
 	var n := centerline_points.size()
 	pacing_brake = PackedFloat32Array()
+	pacing_outer_amber = PackedFloat32Array()
+	pacing_inner_amber = PackedFloat32Array()
 	if n < 3:
 		return
 
 	pacing_brake.resize(n)
+	pacing_outer_amber.resize(n)
+	pacing_inner_amber.resize(n)
 
-	# 1. Smoothed local curvature kappa = 1 / R along the closed loop
+	# 1. Smoothed local curvature kappa = 1 / R and signed inside-wall direction along the loop
 	var kappa := PackedFloat32Array()
+	var signed_inside := PackedFloat32Array() # > 0 => outer_points is the inside apex; < 0 => inner_points is inside
 	kappa.resize(n)
+	signed_inside.resize(n)
 	for i in n:
-		var r := _estimate_bend_radius(
-			centerline_points[(i - 1 + n) % n],
-			centerline_points[i],
-			centerline_points[(i + 1) % n]
-		)
+		var prev_pt := centerline_points[(i - 1 + n) % n]
+		var curr_pt := centerline_points[i]
+		var next_pt := centerline_points[(i + 1) % n]
+		var r := _estimate_bend_radius(prev_pt, curr_pt, next_pt)
 		kappa[i] = 1.0 / maxf(r, 80.0)
+		var d_in := (curr_pt - prev_pt).normalized()
+		var d_out := (next_pt - curr_pt).normalized()
+		var turn_inward := d_out - d_in
+		var to_outer := (outer_points[i] - curr_pt).normalized()
+		signed_inside[i] = to_outer.dot(turn_inward)
 
 	for _pass in range(4):
 		var next_k := PackedFloat32Array()
+		var next_s := PackedFloat32Array()
 		next_k.resize(n)
+		next_s.resize(n)
 		for i in n:
-			next_k[i] = kappa[(i - 1 + n) % n] * 0.25 + kappa[i] * 0.5 + kappa[(i + 1) % n] * 0.25
+			var pi := (i - 1 + n) % n
+			var ni := (i + 1) % n
+			next_k[i] = kappa[pi] * 0.25 + kappa[i] * 0.5 + kappa[ni] * 0.25
+			next_s[i] = signed_inside[pi] * 0.25 + signed_inside[i] * 0.5 + signed_inside[ni] * 0.25
 		kappa = next_k
+		signed_inside = next_s
 
 	# 2. Forward acceleration pass & backward braking pass -> exact v_opt speed profile
 	var a_accel := maxf(pacing_ref_accel_px, 100.0)
@@ -1345,7 +1363,14 @@ func _compute_pacing_zones() -> void:
 			v_hi = maxf(v_hi, v_opt[i])
 		var v_span := maxf(v_hi - v_lo, 1.0)
 		for i in n:
-			pacing_brake[i] = clampf(1.0 - (v_opt[i] - v_lo) / v_span, 0.0, 1.0) * turn_orange_level
+			var lv := clampf(1.0 - (v_opt[i] - v_lo) / v_span, 0.0, 1.0) * turn_orange_level
+			pacing_brake[i] = lv
+			if signed_inside[i] >= 0.0:
+				pacing_outer_amber[i] = lv
+				pacing_inner_amber[i] = 0.0
+			else:
+				pacing_outer_amber[i] = 0.0
+				pacing_inner_amber[i] = lv
 		return
 
 	# 4. Merge tiny gaps (< 180 px) between adjacent turns (e.g. tight S-bends) so they stay Orange
@@ -1374,10 +1399,25 @@ func _compute_pacing_zones() -> void:
 			for k in gap_len:
 				is_turn[(gap_start + k) % n] = 1
 
-	# 5. Fill pacing_brake: 1.0 inside turns, and for every inter-turn span [start..end],
-	# fade Orange (1.0) -> Peak Blue (0.0) at the v_opt midpoint -> Orange (1.0) at the next turn!
+	# 5. Fill directional inside-edge amber arrays:
+	#   - Inside slow turns: ONLY the inside edge (apex side) is 100% Amber; outside stays Blue.
+	#   - First half of straight (Turn A exit -> Midpoint Peak): Turn A's inside edge fades Amber -> Blue.
+	#   - At Midpoint Peak: BOTH edges hit 100% Pure Blue (flip-and-burn cue).
+	#   - Second half of straight (Midpoint Peak -> Turn B entry): Turn B's inside edge fades Blue -> Amber,
+	#     telegraphing both braking timing AND upcoming turn direction (Left vs Right)!
 	for i in n:
-		pacing_brake[i] = turn_orange_level if is_turn[i] == 1 else 0.0
+		if is_turn[i] == 1:
+			pacing_brake[i] = turn_orange_level
+			if signed_inside[i] >= 0.0:
+				pacing_outer_amber[i] = turn_orange_level
+				pacing_inner_amber[i] = 0.0
+			else:
+				pacing_outer_amber[i] = 0.0
+				pacing_inner_amber[i] = turn_orange_level
+		else:
+			pacing_brake[i] = 0.0
+			pacing_outer_amber[i] = 0.0
+			pacing_inner_amber[i] = 0.0
 
 	first_turn = -1
 	for i in n:
@@ -1410,6 +1450,21 @@ func _compute_pacing_zones() -> void:
 		if m == 0:
 			continue
 
+		# Determine exit turn's inside wall (Turn A) and upcoming turn's inside wall (Turn B)
+		var exit_dir_sum := 0.0
+		for step_back in range(1, 5):
+			var ti := (span_indices[0] - step_back + n) % n
+			if is_turn[ti] == 1 or step_back == 1:
+				exit_dir_sum += signed_inside[ti]
+		var exit_is_outer := exit_dir_sum >= 0.0
+
+		var entry_dir_sum := 0.0
+		for step_fwd in range(1, 5):
+			var ti := (span_indices[m - 1] + step_fwd) % n
+			if is_turn[ti] == 1 or step_fwd == 1:
+				entry_dir_sum += signed_inside[ti]
+		var entry_is_outer := entry_dir_sum >= 0.0
+
 		# Find exact physics flip-and-burn midpoint peak (max v_opt inside this span)
 		var peak_k := 0
 		var peak_v := -1.0
@@ -1419,47 +1474,69 @@ func _compute_pacing_zones() -> void:
 				peak_v = v_here
 				peak_k = k
 
-		# Guard against peak sitting right on an endpoint vertex on very short spans
 		if m >= 3:
 			peak_k = clampi(peak_k, 1, m - 2)
 
-		var d_exit := maxf(span_cum_d[peak_k] + seg_len[(span_indices[0] - 1 + n) % n], 1.0)
-		var d_total := maxf(d_acc + seg_len[(span_indices[0] - 1 + n) % n], 1.0)
-		var d_peak := span_cum_d[peak_k] + seg_len[(span_indices[0] - 1 + n) % n]
-		var d_rem := maxf(d_total - d_peak, 1.0)
 		var lead_seg := seg_len[(span_indices[0] - 1 + n) % n]
+		var d_peak := lead_seg + span_cum_d[peak_k]
+		var d_exit := maxf(d_peak, 1.0)
+		var d_total := maxf(lead_seg + d_acc, 1.0)
+		var d_rem := maxf(d_total - d_peak, 1.0)
 
 		for k in m:
 			var vi := span_indices[k]
 			var d_from_turn := lead_seg + span_cum_d[k]
 			if k <= peak_k:
-				# First half: Turn (Orange 1.0) -> Midpoint Peak (Pure Blue 0.0)
+				# First half: Turn A's inside edge fades Amber (1.0) -> Pure Blue (0.0) at midpoint
 				var u := clampf(d_from_turn / d_exit, 0.0, 1.0)
-				pacing_brake[vi] = (1.0 - u) * turn_orange_level
+				var lv := (1.0 - u) * turn_orange_level
+				pacing_brake[vi] = lv
+				if exit_is_outer:
+					pacing_outer_amber[vi] = lv
+					pacing_inner_amber[vi] = 0.0
+				else:
+					pacing_outer_amber[vi] = 0.0
+					pacing_inner_amber[vi] = lv
 			else:
-				# Second half: Midpoint Peak (Pure Blue 0.0) -> Next Turn (Orange 1.0)
+				# Second half: Turn B's inside edge fades Pure Blue (0.0) -> Amber (1.0) into Turn B
 				var u := clampf((d_from_turn - d_peak) / d_rem, 0.0, 1.0)
-				pacing_brake[vi] = u * turn_orange_level
+				var lv := u * turn_orange_level
+				pacing_brake[vi] = lv
+				if entry_is_outer:
+					pacing_outer_amber[vi] = lv
+					pacing_inner_amber[vi] = 0.0
+				else:
+					pacing_outer_amber[vi] = 0.0
+					pacing_inner_amber[vi] = lv
 
-	# 6. Light 1-pass smoothing so turn boundaries feel organic while keeping peak Blue razor-clear
-	var smoothed := PackedFloat32Array()
-	smoothed.resize(n)
+	# 6. Light 1-pass smoothing per edge so boundaries and S-bend side-swaps flow seamlessly
+	var sm_b := PackedFloat32Array()
+	var sm_o := PackedFloat32Array()
+	var sm_i := PackedFloat32Array()
+	sm_b.resize(n)
+	sm_o.resize(n)
+	sm_i.resize(n)
 	for i in n:
 		var pi := (i - 1 + n) % n
 		var ni := (i + 1) % n
-		smoothed[i] = pacing_brake[pi] * 0.2 + pacing_brake[i] * 0.6 + pacing_brake[ni] * 0.2
-	pacing_brake = smoothed
+		sm_b[i] = pacing_brake[pi] * 0.2 + pacing_brake[i] * 0.6 + pacing_brake[ni] * 0.2
+		sm_o[i] = pacing_outer_amber[pi] * 0.2 + pacing_outer_amber[i] * 0.6 + pacing_outer_amber[ni] * 0.2
+		sm_i[i] = pacing_inner_amber[pi] * 0.2 + pacing_inner_amber[i] * 0.6 + pacing_inner_amber[ni] * 0.2
+	pacing_brake = sm_b
+	pacing_outer_amber = sm_o
+	pacing_inner_amber = sm_i
 
 
 func _build_wall_gradient(
 	wall_pts: PackedVector2Array,
+	wall_amber: PackedFloat32Array,
 	accel_col: Color,
 	brake_col: Color,
 	warn_vals: PackedFloat32Array,
 	warn_boost_col: Color
 ) -> Gradient:
 	var n := wall_pts.size()
-	if n < 3 or pacing_brake.size() != n:
+	if n < 3 or wall_amber.size() != n:
 		return null
 
 	var cum := PackedFloat32Array()
@@ -1484,7 +1561,7 @@ func _build_wall_gradient(
 		var ni := (v_idx + 1) % n
 		var seg_d := maxf(cum[v_idx + 1] - cum[v_idx], 0.0001)
 		var t := clampf((target_d - cum[v_idx]) / seg_d, 0.0, 1.0)
-		var bw := lerpf(pacing_brake[v_idx], pacing_brake[ni], t)
+		var bw := lerpf(wall_amber[v_idx], wall_amber[ni], t)
 		var col := _eval_pacing_color(accel_col, brake_col, bw)
 		if warn_vals.size() == n:
 			var ww := lerpf(warn_vals[v_idx], warn_vals[ni], t)
@@ -1511,7 +1588,8 @@ func _apply_visuals() -> void:
 	# 0. Compute 2-pass static Newtonian pacing ribbon (Cyan-Blue <-> Amber)
 	_compute_pacing_zones()
 
-	# 1. Compute per-vertex outside-corner warning intensities (0..1) for sharp hairpins
+	# 1. Compute per-vertex INSIDE-corner apex kerb intensities (0..1) for sharp hairpins
+	#    (outside wall stays crisp Blue; inside apex glows bright Light Amber!)
 	var outer_warn := PackedFloat32Array()
 	var inner_warn := PackedFloat32Array()
 	outer_warn.resize(n)
@@ -1532,7 +1610,7 @@ func _apply_visuals() -> void:
 			var d_out := (next_pt - curr_pt).normalized()
 			var turn_inward := d_out - d_in
 			var to_outer := outer_points[i] - curr_pt
-			if to_outer.dot(-turn_inward) >= 0.0:
+			if to_outer.dot(turn_inward) >= 0.0:
 				outer_warn[i] = intensity
 				inner_warn[i] = 0.0
 			else:
@@ -1571,12 +1649,12 @@ func _apply_visuals() -> void:
 	var warn_glow := Color(1.0, 0.84, 0.40, 0.72)
 	var warn_core := Color(1.0, 0.95, 0.74, 1.0)
 
-	var outer_bloom_grad := _build_wall_gradient(outer_points, bloom_accel, bloom_brake, outer_warn, warn_bloom)
-	var inner_bloom_grad := _build_wall_gradient(inner_points, bloom_accel, bloom_brake, inner_warn, warn_bloom)
-	var outer_glow_grad := _build_wall_gradient(outer_points, glow_accel, glow_brake, outer_warn, warn_glow)
-	var inner_glow_grad := _build_wall_gradient(inner_points, glow_accel, glow_brake, inner_warn, warn_glow)
-	var outer_core_grad := _build_wall_gradient(outer_points, core_accel, core_brake, outer_warn, warn_core)
-	var inner_core_grad := _build_wall_gradient(inner_points, core_accel, core_brake, inner_warn, warn_core)
+	var outer_bloom_grad := _build_wall_gradient(outer_points, pacing_outer_amber, bloom_accel, bloom_brake, outer_warn, warn_bloom)
+	var inner_bloom_grad := _build_wall_gradient(inner_points, pacing_inner_amber, bloom_accel, bloom_brake, inner_warn, warn_bloom)
+	var outer_glow_grad := _build_wall_gradient(outer_points, pacing_outer_amber, glow_accel, glow_brake, outer_warn, warn_glow)
+	var inner_glow_grad := _build_wall_gradient(inner_points, pacing_inner_amber, glow_accel, glow_brake, inner_warn, warn_glow)
+	var outer_core_grad := _build_wall_gradient(outer_points, pacing_outer_amber, core_accel, core_brake, outer_warn, warn_core)
+	var inner_core_grad := _build_wall_gradient(inner_points, pacing_inner_amber, core_accel, core_brake, inner_warn, warn_core)
 
 	for spec in [
 		[_outer_bloom, outer_points, 28.0, outer_bloom_grad, bloom_accel],
@@ -1720,7 +1798,7 @@ func _rebuild_surface_mesh(outer_warn: PackedFloat32Array, inner_warn: PackedFlo
 	verts.resize(n * strip_count * 6)
 	colors.resize(n * strip_count * 6)
 
-	var has_pacing := pacing_brake.size() == n
+	var has_pacing := pacing_outer_amber.size() == n and pacing_inner_amber.size() == n
 	var idx := 0
 	for i in n:
 		var ni := (i + 1) % n
@@ -1729,18 +1807,22 @@ func _rebuild_surface_mesh(outer_warn: PackedFloat32Array, inner_warn: PackedFlo
 		var o1 := outer_points[ni]
 		var i1 := inner_points[ni]
 
-		var b0 := clampf(pacing_brake[i], 0.0, 1.0) if has_pacing else 0.0
-		var b1 := clampf(pacing_brake[ni], 0.0, 1.0) if has_pacing else 0.0
+		var bo0 := clampf(pacing_outer_amber[i], 0.0, 1.0) if has_pacing else 0.0
+		var bi0 := clampf(pacing_inner_amber[i], 0.0, 1.0) if has_pacing else 0.0
+		var bo1 := clampf(pacing_outer_amber[ni], 0.0, 1.0) if has_pacing else 0.0
+		var bi1 := clampf(pacing_inner_amber[ni], 0.0, 1.0) if has_pacing else 0.0
 
-		# Keep the track center calm translucent blue; only the outer & inner edges
-		# transition Blue <-> Light Amber to telegraph turns and midpoint flip points.
-		var edge0 := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, b0)
-		var edge1 := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, b1)
+		# Keep the track center calm translucent blue; ONLY the inside edge of each turn
+		# transitions Blue <-> Light Amber while the outside edge stays pure crisp Blue!
+		var edge0_o := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, bo0)
+		var edge0_i := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, bi0)
+		var edge1_o := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, bo1)
+		var edge1_i := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, bi1)
 
-		var col0_o := edge0.lerp(hairpin_warn_edge_color, outer_warn[i] * 0.55)
-		var col0_i := edge0.lerp(hairpin_warn_edge_color, inner_warn[i] * 0.55)
-		var col1_o := edge1.lerp(hairpin_warn_edge_color, outer_warn[ni] * 0.55)
-		var col1_i := edge1.lerp(hairpin_warn_edge_color, inner_warn[ni] * 0.55)
+		var col0_o := edge0_o.lerp(hairpin_warn_edge_color, outer_warn[i] * 0.55)
+		var col0_i := edge0_i.lerp(hairpin_warn_edge_color, inner_warn[i] * 0.55)
+		var col1_o := edge1_o.lerp(hairpin_warn_edge_color, outer_warn[ni] * 0.55)
+		var col1_i := edge1_i.lerp(hairpin_warn_edge_color, inner_warn[ni] * 0.55)
 
 		var row0_c: Array[Color] = [col0_o, surface_mid_color, surface_center_color, surface_mid_color, col0_i]
 		var row1_c: Array[Color] = [col1_o, surface_mid_color, surface_center_color, surface_mid_color, col1_i]
@@ -1810,7 +1892,7 @@ func _build_projector_buoys(outer_warn: PackedFloat32Array, inner_warn: PackedFl
 	var n := centerline_points.size()
 	if n < 3 or track_length_px <= 1.0 or buoy_spacing_px <= 20.0:
 		return result
-	var has_pacing := pacing_brake.size() == n
+	var has_pacing := pacing_outer_amber.size() == n and pacing_inner_amber.size() == n
 	var count := maxi(int(floor(track_length_px / buoy_spacing_px)), 6)
 	var step := track_length_px / float(count)
 	var perch_offset := 15.0
@@ -1830,9 +1912,10 @@ func _build_projector_buoys(outer_warn: PackedFloat32Array, inner_warn: PackedFl
 		var o_tan := (outer_points[hi] - outer_points[lo]).normalized()
 		var i_tan := (inner_points[hi] - inner_points[lo]).normalized()
 		var to_center_from_outer := (i_pos - o_pos).normalized()
-		var bw := lerpf(pacing_brake[lo], pacing_brake[hi], t) if has_pacing else 0.0
-		var o_w := maxf(lerpf(outer_warn[lo], outer_warn[hi], t), bw)
-		var i_w := maxf(lerpf(inner_warn[lo], inner_warn[hi], t), bw)
+		var bo := lerpf(pacing_outer_amber[lo], pacing_outer_amber[hi], t) if has_pacing else 0.0
+		var bi := lerpf(pacing_inner_amber[lo], pacing_inner_amber[hi], t) if has_pacing else 0.0
+		var o_w := maxf(lerpf(outer_warn[lo], outer_warn[hi], t), bo)
+		var i_w := maxf(lerpf(inner_warn[lo], inner_warn[hi], t), bi)
 
 		result.append({
 			"pos": o_pos - to_center_from_outer * perch_offset,
