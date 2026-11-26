@@ -16,12 +16,14 @@ enum RaceState {
 	COUNTDOWN_INITIAL,
 	COUNTDOWN_RESTART,
 	RACING,
+	WRECKED,
 	FINISHED,
 }
 
 @export var initial_countdown_seconds: float = 3.0
 @export var restart_countdown_seconds: float = 1.0
 @export var go_banner_duration: float = 0.65
+@export var wreck_respawn_delay_seconds: float = 1.6
 
 var state: RaceState = RaceState.COUNTDOWN_INITIAL
 var race_time: float = 0.0
@@ -37,6 +39,8 @@ var _ship: RigidBody2D = null
 var _track: Node = null
 var _go_banner_timer: float = 0.0
 var _split_flash_timer: float = 0.0
+var _wreck_respawn_timer: float = 0.0
+var _wreck_reason_text: String = ""
 var _last_finish_is_best: bool = false
 var is_paused: bool = false
 
@@ -81,6 +85,12 @@ func _bind_scene_nodes() -> void:
 	if _ship != null and _ship.get_parent() != null:
 		_track = _ship.get_parent().get_node_or_null("Track")
 
+	if _ship != null:
+		if _ship.has_signal("module_detached") and not _ship.module_detached.is_connected(_on_ship_module_detached):
+			_ship.module_detached.connect(_on_ship_module_detached)
+		if _ship.has_signal("ship_wrecked") and not _ship.ship_wrecked.is_connected(_on_ship_wrecked):
+			_ship.ship_wrecked.connect(_on_ship_wrecked)
+
 	if _track != null:
 		if _track.has_signal("track_generated") and not _track.track_generated.is_connected(_on_track_generated):
 			_track.track_generated.connect(_on_track_generated)
@@ -106,6 +116,8 @@ func begin_race(is_restart: bool) -> void:
 	race_time = 0.0
 	_go_banner_timer = 0.0
 	_split_flash_timer = 0.0
+	_wreck_respawn_timer = 0.0
+	_wreck_reason_text = ""
 	_last_finish_is_best = false
 
 	if _track != null and _track.has_method("set_active_checkpoint"):
@@ -206,9 +218,37 @@ func _process(delta: float) -> void:
 		RaceState.RACING:
 			race_time += delta
 
+		RaceState.WRECKED:
+			_wreck_respawn_timer -= delta
+			if _wreck_respawn_timer <= 0.0:
+				begin_race(true)
+				return
+
 		RaceState.FINISHED:
 			pass
 
+	_update_hud()
+
+
+func _on_ship_module_detached(module_name: String, impact_g: float) -> void:
+	if state != RaceState.RACING or _split_label == null:
+		return
+	var pretty := module_name.to_upper()
+	_split_label.text = "%s SHEARED! (%.0f G)" % [pretty, impact_g]
+	_split_label.add_theme_color_override("font_color", Color(1.0, 0.62, 0.18, 1.0))
+	_split_flash_timer = 1.6
+
+
+func _on_ship_wrecked(reason: String, impact_g: float) -> void:
+	if state != RaceState.RACING:
+		return
+	state = RaceState.WRECKED
+	_wreck_reason_text = reason
+	_wreck_respawn_timer = maxf(wreck_respawn_delay_seconds, 0.5)
+	if _split_label != null:
+		_split_label.text = "IMPACT %.0f G — RESTARTING..." % impact_g
+		_split_label.add_theme_color_override("font_color", Color(1.0, 0.35, 0.28, 1.0))
+		_split_flash_timer = _wreck_respawn_timer
 	_update_hud()
 
 
@@ -401,6 +441,10 @@ func _update_hud() -> void:
 			_countdown_label.visible = true
 			_countdown_label.text = "READY"
 			_countdown_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25, 1.0))
+		elif state == RaceState.WRECKED:
+			_countdown_label.visible = true
+			_countdown_label.text = _wreck_reason_text if not _wreck_reason_text.is_empty() else "SIGNAL LOST"
+			_countdown_label.add_theme_color_override("font_color", Color(1.0, 0.25, 0.22, 1.0))
 		elif _go_banner_timer > 0.0:
 			var alpha := clampf(_go_banner_timer / maxf(go_banner_duration, 0.01), 0.0, 1.0)
 			_countdown_label.visible = true

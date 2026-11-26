@@ -1,5 +1,8 @@
 extends RigidBody2D
 
+signal module_detached(module_name: String, impact_g: float)
+signal ship_wrecked(reason: String, impact_g: float)
+
 # Standard Earth gravity (m/s^2), used to convert Specific Impulse (I_sp in seconds)
 # into effective exhaust velocity: v_e = I_sp * STANDARD_GRAVITY (m/s).
 const STANDARD_GRAVITY := 9.80665
@@ -94,9 +97,25 @@ const ShipModuleScript = preload("res://ship_module.gd")
 ## Enable developer mid-flight D-pad ship/part cycling and fuel refill hotkey.
 @export var dev_hotkeys_enabled: bool = false
 
+# ---------------------------------------------------------------------------
+# Structural Integrity & Impact Physics
+# ---------------------------------------------------------------------------
+@export_group("Structural Integrity & Impact Physics")
+## Enable real impact G-load calculation and modular part shear/detachment.
+@export var destruction_enabled: bool = true
+## Fixed structural crush pulse duration (s) converting delta-v into framerate-independent G-load.
+@export var impact_pulse_duration_s: float = 0.05
+## Baseline Tier 1 whole-ship shock G-limit before Transmitter loses signal.
+@export var transmitter_shock_g_limit: float = 60.0
+## Metallic restitution (bounciness) used for exact rigid-body rebound of sheared parts.
+@export_range(0.0, 0.9, 0.05) var debris_restitution: float = 0.35
+## Tangential Coulomb friction coefficient used for wall-scrape spin of sheared parts.
+@export_range(0.0, 1.5, 0.05) var debris_friction: float = 0.45
+
 var rotational_stabilize := true
 var controls_locked: bool = false
 var hold_at_start: bool = false
+var is_wrecked: bool = false
 var current_heat_kj: float = 0.0
 var heat_capacity_kj: float = 100.0
 var overburn_locked_out: bool = false
@@ -118,6 +137,7 @@ var _rcs_tier: int = 1
 var _loaded_hull_scene: PackedScene = null
 var _initial_fuel_mass: float = 0.0
 var _dry_mass: float = 0.0
+var _inertia_si: float = 1.0
 var _current_max_thrust_n: float = 0.0
 var _current_applied_thrust_n: float = 0.0
 var _current_fuel_burn_rate: float = 0.0
@@ -142,6 +162,20 @@ var _exhaust_base_scale: Vector2 = Vector2.ONE
 var _modular_parts: Array[Dictionary] = []
 var _aux_mount_positions_m: Array[Vector2] = []
 var _center_of_mass_m: Vector2 = Vector2.ZERO
+var _initial_total_hull_weight: float = 0.0
+var _initial_rcs_nozzle_count: int = 0
+var _has_main_engine: bool = true
+var _hull_damaged: bool = false
+var _last_impact_g: float = 0.0
+
+# Impact tracking & detached zero-G debris management
+var _prev_linear_velocity: Vector2 = Vector2.ZERO
+var _prev_angular_velocity: float = 0.0
+var _has_prev_velocity: bool = false
+var _ccd_hold_frames: int = 0
+var _pending_detach_ids: Dictionary = {}
+var _spawned_debris: Array[RigidBody2D] = []
+var _debris_exception_timers: Array[Dictionary] = []
 
 # Discovered RCS nozzles in ship-local space. Each entry stores:
 #   "node": Node2D, "name": String, "pos_px": Vector2, "pos_m": Vector2,
@@ -155,6 +189,8 @@ var _rcs_nozzles: Array[Dictionary] = []
 
 
 func _ready() -> void:
+	contact_monitor = true
+	max_contacts_reported = 8
 	var gs := get_node_or_null("/root/GameState")
 	if _telemetry_panel != null:
 		_telemetry_panel.visible = bool(gs.show_telemetry) if gs != null else false
@@ -346,8 +382,8 @@ func get_flip_and_burn_projection() -> Dictionary:
 
 	# Time to finish turning from current heading to retrograde using live RCS & inertia
 	var t_flip := 0.0
-	if turn_angle > aim_deadband_rad and _current_rcs_torque > 0.0 and inertia > 0.0 and fuel_mass > 0.0:
-		var alpha := _current_rcs_torque / inertia
+	if turn_angle > aim_deadband_rad and _current_rcs_torque > 0.0 and _inertia_si > 0.0 and fuel_mass > 0.0:
+		var alpha := _current_rcs_torque / _inertia_si
 		var alpha_brake := alpha / maxf(brake_multiplier, 1.0)
 		t_flip = sqrt(2.0 * turn_angle * (1.0 / alpha + 1.0 / alpha_brake))
 
@@ -387,11 +423,23 @@ func place_at_spawn(world_pos: Vector2, world_rot: float, refill_fuel: bool = tr
 	PhysicsServer2D.body_set_state(get_rid(), PhysicsServer2D.BODY_STATE_LINEAR_VELOCITY, Vector2.ZERO)
 	PhysicsServer2D.body_set_state(get_rid(), PhysicsServer2D.BODY_STATE_ANGULAR_VELOCITY, 0.0)
 	if refill_fuel:
+		clear_debris()
+		is_wrecked = false
+		_last_impact_g = 0.0
+		_has_prev_velocity = false
+		_ccd_hold_frames = 0
+		_prev_linear_velocity = Vector2.ZERO
+		_prev_angular_velocity = 0.0
+		_pending_detach_ids.clear()
 		fuel_mass = _initial_fuel_mass
 		current_heat_kj = 0.0
 		overburn_locked_out = false
 		is_overburning = false
-		_recalculate_mass_and_inertia()
+		if _hull_damaged:
+			_rebuild_hull_visuals()
+			_refresh_all_stats()
+		else:
+			_recalculate_mass_and_inertia()
 	var cam := get_node_or_null("Camera2D")
 	if cam != null and cam.has_method("reset_snap"):
 		cam.reset_snap()
@@ -528,7 +576,41 @@ func _infer_module_role(part_node: Node2D) -> int:
 	return ShipModuleScript.ModuleRole.STRUCTURE
 
 
+func clear_debris() -> void:
+	for entry in _debris_exception_timers:
+		var body: RigidBody2D = entry["body"]
+		if is_instance_valid(body):
+			remove_collision_exception_with(body)
+	_debris_exception_timers.clear()
+
+	for debris in _spawned_debris:
+		if is_instance_valid(debris):
+			debris.queue_free()
+	_spawned_debris.clear()
+
+
+func _get_hull_tier_strength_multiplier() -> float:
+	var tier := clampi(installed_hull.tech_tier if installed_hull != null else _hull_tier, 1, 4)
+	match tier:
+		1:
+			return 1.0
+		2:
+			return 1.25
+		3:
+			return 1.50
+		4:
+			return 1.80
+	return 1.0
+
+
 func _rebuild_hull_visuals() -> void:
+	clear_debris()
+	_pending_detach_ids.clear()
+	_hull_damaged = false
+	_has_main_engine = true
+	_initial_total_hull_weight = 0.0
+	_initial_rcs_nozzle_count = 0
+
 	# Immediately detach and free previous hull and reparented/generated collision shapes
 	for col in _active_collisions:
 		if is_instance_valid(col):
@@ -603,20 +685,41 @@ func _rebuild_hull_visuals() -> void:
 				var props := _compute_polygon_mass_properties(transformed_pts)
 				var role := _infer_module_role(part_node)
 				var weight: float
+				var shear_limit := 11.0
+				var axial_mult := 2.2
 				if part_node is ShipModuleScript:
 					weight = maxf(float(part_node.hull_mass_weight), 0.0)
+					shear_limit = maxf(float(part_node.shear_g_limit), 1.0)
+					axial_mult = maxf(float(part_node.axial_strength_multiplier), 1.0)
 				else:
 					weight = 0.0 if role == ShipModuleScript.ModuleRole.MAIN_ENGINE else maxf(float(props["area_m2"]), 0.001)
+					if role == ShipModuleScript.ModuleRole.FUEL_TANK:
+						shear_limit = 32.0
+						axial_mult = 1.0
+					elif role == ShipModuleScript.ModuleRole.TRANSMITTER:
+						shear_limit = 22.0
+						axial_mult = 1.5
+					elif role == ShipModuleScript.ModuleRole.MAIN_ENGINE:
+						shear_limit = 17.0
+						axial_mult = 1.8
+
+				var part_xform := _get_transform_relative_to_ship(part_node)
+				var axis_local := part_xform.basis_xform(Vector2.UP).normalized()
 
 				_modular_parts.append({
 					"node": part_node,
+					"collider": col_poly,
 					"name": String(part_node.name),
 					"role": role,
 					"hull_mass_weight": weight,
+					"shear_g_limit": shear_limit,
+					"axial_strength_multiplier": axial_mult,
+					"axis_local": axis_local,
 					"area_m2": float(props["area_m2"]),
 					"centroid_m": props["centroid_m"] as Vector2,
 					"i_cm_per_kg": float(props["i_cm_per_kg"]),
 				})
+				_initial_total_hull_weight += weight
 
 		# Find ExhaustSprite anywhere inside the hull (supports both hull root and MainEngine/ExhaustSprite)
 		_exhaust_sprite = _find_first_node_by_name(_active_hull_node, "ExhaustSprite") as Sprite2D
@@ -625,6 +728,7 @@ func _rebuild_hull_visuals() -> void:
 
 		# Discover every mounted RCS nozzle recursively (any Node2D with a Plume child)
 		_collect_rcs_nozzles(_active_hull_node)
+		_initial_rcs_nozzle_count = _rcs_nozzles.size()
 
 	_update_exhaust_visual(0.0)
 	var empty_throttles := PackedFloat32Array()
@@ -709,19 +813,22 @@ func _recalculate_mass_and_inertia() -> void:
 		var rcs_mass_kg := maxf(installed_rcs.mass_kg, 0.0) if installed_rcs != null else 0.0
 		var cur_fuel_kg := maxf(fuel_mass, 0.0)
 
-		var total_hull_weight := 0.0
+		var total_hull_weight := _initial_total_hull_weight
 		var fuel_tank_count := 0
 		var main_engine_count := 0
 		for part in _modular_parts:
-			total_hull_weight += float(part["hull_mass_weight"])
 			var role: int = part["role"]
 			if role == ShipModuleScript.ModuleRole.FUEL_TANK:
 				fuel_tank_count += 1
 			elif role == ShipModuleScript.ModuleRole.MAIN_ENGINE:
 				main_engine_count += 1
+		if total_hull_weight <= 0.0:
+			for part in _modular_parts:
+				total_hull_weight += float(part["hull_mass_weight"])
 
-		# Distribute hull dry mass by explicit per-part weights, thruster mass onto MainEngine(s),
-		# and live fuel_mass onto FuelTank(s).
+		# Distribute hull dry mass by explicit per-part weights (preserving original denominator
+		# so detaching a part genuinely removes its mass from the ship!), thruster mass onto
+		# MainEngine(s), and live fuel_mass onto FuelTank(s).
 		var dry := 0.0
 		for part in _modular_parts:
 			var role: int = part["role"]
@@ -731,7 +838,7 @@ func _recalculate_mass_and_inertia() -> void:
 
 			if total_hull_weight > 0.0:
 				part_dry_kg += hull_mass_kg * (float(part["hull_mass_weight"]) / total_hull_weight)
-			if role == ShipModuleScript.ModuleRole.MAIN_ENGINE and main_engine_count > 0:
+			if role == ShipModuleScript.ModuleRole.MAIN_ENGINE and main_engine_count > 0 and _has_main_engine:
 				part_dry_kg += thruster_mass_kg / float(main_engine_count)
 
 			if part_dry_kg > 0.0:
@@ -749,25 +856,27 @@ func _recalculate_mass_and_inertia() -> void:
 					"i_cm_per_kg": i_cm_per_kg,
 				})
 
-		# Fallbacks if a custom modular blueprint omitted FuelTank or MainEngine roles
-		if main_engine_count == 0 and thruster_mass_kg > 0.0:
+		# Fallbacks only on intact custom blueprints that omitted FuelTank or MainEngine roles
+		if main_engine_count == 0 and _has_main_engine and not _hull_damaged and thruster_mass_kg > 0.0:
 			dry += thruster_mass_kg
 			mass_elements.append({"mass": thruster_mass_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
-		if fuel_tank_count == 0 and cur_fuel_kg > 0.0:
+		if fuel_tank_count == 0 and not _hull_damaged and cur_fuel_kg > 0.0:
 			mass_elements.append({"mass": cur_fuel_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
 
-		# Distribute RCS system mass across each mounted RCS nozzle at its real mount position
+		# Distribute RCS system mass across surviving RCS nozzles (preserving per-nozzle mass)
 		if rcs_mass_kg > 0.0:
-			dry += rcs_mass_kg
 			if not _rcs_nozzles.is_empty():
-				var per_nozzle_kg := rcs_mass_kg / float(_rcs_nozzles.size())
+				var denom := float(maxi(_initial_rcs_nozzle_count, _rcs_nozzles.size()))
+				var per_nozzle_kg := rcs_mass_kg / denom
+				dry += per_nozzle_kg * float(_rcs_nozzles.size())
 				for noz in _rcs_nozzles:
 					mass_elements.append({
 						"mass": per_nozzle_kg,
 						"pos_m": noz["pos_m"] as Vector2,
 						"i_cm_per_kg": 0.0,
 					})
-			else:
+			elif not _hull_damaged:
+				dry += rcs_mass_kg
 				mass_elements.append({"mass": rcs_mass_kg, "pos_m": Vector2.ZERO, "i_cm_per_kg": 0.0})
 
 		# Distribute each installed aux part symmetrically across AuxMount* markers
@@ -808,7 +917,11 @@ func _recalculate_mass_and_inertia() -> void:
 
 		_dry_mass = dry
 		mass = maxf(total_mass, MIN_TOTAL_MASS)
-		inertia = maxf(total_inertia, MIN_INERTIA)
+		_inertia_si = maxf(total_inertia, MIN_INERTIA)
+		# Godot 2D RigidBody2D operates in pixels (kg*px^2), so scale SI inertia by ppm^2
+		# so wall/ship collision spin matches real-world rotational inertia!
+		var ppm_sq := maxf(pixels_per_meter, 0.001) * maxf(pixels_per_meter, 0.001)
+		inertia = _inertia_si * ppm_sq
 		return
 
 	# Legacy single-collider hull path: uniform-radius inertia approximation around origin
@@ -829,11 +942,13 @@ func _recalculate_mass_and_inertia() -> void:
 
 	_dry_mass = dry
 	mass = maxf(total_mass, MIN_TOTAL_MASS)
-	inertia = maxf(total_inertia, MIN_INERTIA)
+	_inertia_si = maxf(total_inertia, MIN_INERTIA)
+	var ppm_sq := maxf(pixels_per_meter, 0.001) * maxf(pixels_per_meter, 0.001)
+	inertia = _inertia_si * ppm_sq
 
 
 func _recalculate_propulsion() -> void:
-	if installed_thruster != null:
+	if installed_thruster != null and _has_main_engine:
 		_current_max_thrust_n = installed_thruster.get_max_thrust_newtons(
 			reference_thruster_mass, reference_thrust_newtons, thrust_mass_exponent
 		)
@@ -884,11 +999,17 @@ func _recalculate_propulsion() -> void:
 		_current_rcs_torque = maxf(cw_tau, ccw_tau)
 		_current_rcs_linear_force = max_axis_linear
 	else:
-		var lever_arm := _get_rcs_lever_arm_m()
-		_max_rcs_cw_torque = 2.0 * _current_rcs_nozzle_thrust_n * lever_arm
-		_max_rcs_ccw_torque = _max_rcs_cw_torque
-		_current_rcs_torque = _max_rcs_cw_torque
-		_current_rcs_linear_force = 2.0 * _current_rcs_nozzle_thrust_n
+		if _hull_damaged:
+			_max_rcs_cw_torque = 0.0
+			_max_rcs_ccw_torque = 0.0
+			_current_rcs_torque = 0.0
+			_current_rcs_linear_force = 0.0
+		else:
+			var lever_arm := _get_rcs_lever_arm_m()
+			_max_rcs_cw_torque = 2.0 * _current_rcs_nozzle_thrust_n * lever_arm
+			_max_rcs_ccw_torque = _max_rcs_cw_torque
+			_current_rcs_torque = _max_rcs_cw_torque
+			_current_rcs_linear_force = 2.0 * _current_rcs_nozzle_thrust_n
 
 	if installed_hull != null:
 		heat_capacity_kj = maxf(installed_hull.heat_capacity_kj, 1.0)
@@ -899,7 +1020,418 @@ func _recalculate_propulsion() -> void:
 	current_heat_kj = clampf(current_heat_kj, 0.0, heat_capacity_kj)
 
 
+func _find_modular_part_entry(part_node: Node2D) -> Dictionary:
+	for entry in _modular_parts:
+		if entry["node"] == part_node:
+			return entry
+	return {}
+
+
+func _compute_module_mass_and_inertia(part_entry: Dictionary) -> Dictionary:
+	var part_node: Node2D = part_entry["node"]
+	var role: int = part_entry["role"]
+	var hull_mass_kg := maxf(installed_hull.mass_kg, 0.0) if installed_hull != null else 0.0
+	var thruster_mass_kg := maxf(installed_thruster.mass_kg, 0.0) if installed_thruster != null else 0.0
+	var rcs_mass_kg := maxf(installed_rcs.mass_kg, 0.0) if installed_rcs != null else 0.0
+
+	var base_kg := 0.0
+	if _initial_total_hull_weight > 0.0:
+		base_kg += hull_mass_kg * (float(part_entry["hull_mass_weight"]) / _initial_total_hull_weight)
+	if role == ShipModuleScript.ModuleRole.MAIN_ENGINE and _has_main_engine:
+		base_kg += thruster_mass_kg
+	if role == ShipModuleScript.ModuleRole.FUEL_TANK:
+		base_kg += maxf(fuel_mass, 0.0)
+
+	var centroid_m: Vector2 = part_entry["centroid_m"]
+	var i_cm_per_kg: float = part_entry["i_cm_per_kg"]
+	var total_kg := base_kg
+	var com_weighted := centroid_m * base_kg
+
+	# Include any RCS nozzles mounted on this module (e.g. RcsCW + RcsCCW on a truss)
+	var child_nozzles: Array[Dictionary] = []
+	var per_nozzle_kg := (rcs_mass_kg / float(_initial_rcs_nozzle_count)) if _initial_rcs_nozzle_count > 0 else 0.0
+	if per_nozzle_kg > 0.0:
+		for noz in _rcs_nozzles:
+			var noz_node: Node2D = noz["node"]
+			if is_instance_valid(noz_node) and part_node.is_ancestor_of(noz_node):
+				child_nozzles.append(noz)
+				total_kg += per_nozzle_kg
+				com_weighted += (noz["pos_m"] as Vector2) * per_nozzle_kg
+
+	total_kg = maxf(total_kg, 0.5)
+	var module_com_m := (com_weighted / total_kg) if base_kg > 0.0 or not child_nozzles.is_empty() else centroid_m
+
+	# Parallel Axis Theorem around the module's combined center of mass
+	var total_i := base_kg * (i_cm_per_kg + (centroid_m - module_com_m).length_squared())
+	for noz in child_nozzles:
+		total_i += per_nozzle_kg * ((noz["pos_m"] as Vector2) - module_com_m).length_squared()
+
+	return {
+		"mass": total_kg,
+		"inertia": maxf(total_i, 0.02),
+		"com_ship_m": module_com_m,
+	}
+
+
+func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
+	if hold_at_start:
+		_prev_linear_velocity = Vector2.ZERO
+		_prev_angular_velocity = 0.0
+		_has_prev_velocity = true
+		return
+
+	if not _has_prev_velocity:
+		_prev_linear_velocity = state.linear_velocity
+		_prev_angular_velocity = state.angular_velocity
+		_has_prev_velocity = true
+		return
+
+	var contact_count := state.get_contact_count()
+	if contact_count > 0 and destruction_enabled and not is_wrecked and not _modular_parts.is_empty():
+		var ppm := maxf(pixels_per_meter, 0.001)
+		var pulse_s := maxf(impact_pulse_duration_s, 0.005)
+		var tier_mult := _get_hull_tier_strength_multiplier()
+		var ship_xform: Transform2D = state.transform
+		var ship_com_world: Vector2 = ship_xform * center_of_mass
+
+		# Aggregate strongest contact per hit modular part
+		var part_hits: Dictionary = {}
+		var fuel_tank_contacted := false
+
+		for i in contact_count:
+			var local_shape_idx := state.get_contact_local_shape(i)
+			var owner_id := shape_find_owner(local_shape_idx)
+			var col_node := shape_owner_get_owner(owner_id) as Node2D
+			var part_node: Node2D = _part_collider_map.get(col_node, null)
+			if part_node == null or not is_instance_valid(part_node):
+				continue
+
+			var part_id := part_node.get_instance_id()
+			if _pending_detach_ids.has(part_id):
+				continue
+
+			var contact_world: Vector2 = state.get_contact_collider_position(i)
+			var push_normal: Vector2 = state.get_contact_local_normal(i).normalized()
+			if push_normal.length_squared() < 0.01:
+				continue
+
+			var r_ship_px := contact_world - ship_com_world
+			var v_self_contact := _prev_linear_velocity + Vector2(
+				-_prev_angular_velocity * r_ship_px.y,
+				_prev_angular_velocity * r_ship_px.x
+			)
+			var v_other_contact: Vector2 = state.get_contact_collider_velocity_at_position(i)
+			var v_rel_px := v_self_contact - v_other_contact
+			var v_close_m_s := maxf(-v_rel_px.dot(push_normal), 0.0) / ppm
+
+			# Reduced-mass factor: walls=1.0, tiny debris=~0.04, heavier ships=m_other/(m_self+m_other)
+			var mass_factor := 1.0
+			var other_obj := state.get_contact_collider_object(i)
+			if other_obj is RigidBody2D:
+				var m_other := maxf((other_obj as RigidBody2D).mass, 0.01)
+				mass_factor = m_other / (mass + m_other)
+
+			var eff_dv_m_s := v_close_m_s * mass_factor
+			var local_g := (eff_dv_m_s / pulse_s) / STANDARD_GRAVITY
+			_last_impact_g = maxf(_last_impact_g, local_g)
+
+			var entry := _find_modular_part_entry(part_node)
+			if entry.is_empty():
+				continue
+			if int(entry["role"]) == ShipModuleScript.ModuleRole.FUEL_TANK:
+				fuel_tank_contacted = true
+
+			if not part_hits.has(part_id) or local_g > float(part_hits[part_id]["impact_g"]):
+				part_hits[part_id] = {
+					"entry": entry,
+					"impact_g": local_g,
+					"contact_world": contact_world,
+					"push_normal": push_normal,
+					"v_other_contact": v_other_contact,
+				}
+
+		var sheared_outer := false
+		var strongest_shear_frac := 1.0
+		var fatal_reason := ""
+		var fatal_g := 0.0
+
+		for part_id in part_hits.keys():
+			var hit: Dictionary = part_hits[part_id]
+			var entry: Dictionary = hit["entry"]
+			var impact_g: float = hit["impact_g"]
+			var push_normal: Vector2 = hit["push_normal"]
+			# Directional structural strength: axial compression (straight down the beam into
+			# the hub) is stronger than 90-deg perpendicular shear/bending at the tip.
+			var axis_world := ship_xform.basis_xform(entry["axis_local"] as Vector2).normalized()
+			var axial := clampf(absf(push_normal.dot(axis_world)), 0.0, 1.0)
+			var axial_mult := maxf(float(entry.get("axial_strength_multiplier", 1.0)), 1.0)
+			var limit_g := float(entry["shear_g_limit"]) * tier_mult * lerpf(1.0, axial_mult, axial * axial)
+			if impact_g <= limit_g:
+				continue
+
+			var part_node: Node2D = entry["node"]
+			var role: int = entry["role"]
+			var props := _compute_module_mass_and_inertia(entry)
+			var m_part: float = props["mass"]
+			var i_part: float = props["inertia"]
+			var part_com_world: Vector2 = ship_xform * ((props["com_ship_m"] as Vector2) * ppm)
+
+			# Exact 2D rigid-body post-impact velocity & spin of the detached part (zero randomness!)
+			var r_part_ship_px := part_com_world - ship_com_world
+			var v_part_pre := _prev_linear_velocity + Vector2(
+				-_prev_angular_velocity * r_part_ship_px.y,
+				_prev_angular_velocity * r_part_ship_px.x
+			)
+			var contact_world: Vector2 = hit["contact_world"]
+			var v_other_contact: Vector2 = hit["v_other_contact"]
+			var r_tip_m := (contact_world - part_com_world) / ppm
+			var v_tip_rel_m := (v_part_pre - v_other_contact) / ppm + Vector2(
+				-_prev_angular_velocity * r_tip_m.y,
+				_prev_angular_velocity * r_tip_m.x
+			)
+
+			var v_n := v_tip_rel_m.dot(push_normal)
+			var r_cross_n := r_tip_m.cross(push_normal)
+			var denom_n := (1.0 / m_part) + (r_cross_n * r_cross_n) / maxf(i_part, 0.001)
+			var j_n := -(1.0 + debris_restitution) * minf(v_n, 0.0) / denom_n
+
+			var tangent := Vector2(-push_normal.y, push_normal.x)
+			var v_t := v_tip_rel_m.dot(tangent)
+			var r_cross_t := r_tip_m.cross(tangent)
+			var denom_t := (1.0 / m_part) + (r_cross_t * r_cross_t) / maxf(i_part, 0.001)
+			var j_t := clampf(-v_t / denom_t, -debris_friction * j_n, debris_friction * j_n)
+
+			var j_si := push_normal * j_n + tangent * j_t
+			var v_debris_px := v_part_pre + (j_si / m_part) * ppm
+			var w_debris := _prev_angular_velocity + r_tip_m.cross(j_si) / maxf(i_part, 0.001)
+
+			_pending_detach_ids[part_id] = true
+			call_deferred("_execute_detach_module", {
+				"part_node": part_node,
+				"impact_g": impact_g,
+				"mass": m_part,
+				"inertia": i_part,
+				"com_ship_m": props["com_ship_m"],
+				"v_debris_px": v_debris_px,
+				"w_debris": w_debris,
+				"push_normal": push_normal,
+				"emit_signal": true,
+			})
+
+			if role == ShipModuleScript.ModuleRole.FUEL_TANK:
+				fatal_reason = "HULL RUPTURE"
+				fatal_g = maxf(fatal_g, impact_g)
+			elif role == ShipModuleScript.ModuleRole.TRANSMITTER:
+				if fatal_reason.is_empty():
+					fatal_reason = "SIGNAL LOST"
+				fatal_g = maxf(fatal_g, impact_g)
+			else:
+				sheared_outer = true
+				strongest_shear_frac = minf(strongest_shear_frac, clampf(limit_g / maxf(impact_g, 0.001), 0.2, 0.85))
+
+		# Glancing shear-through: if only outer appendages sheared off (not the core tank),
+		# cap the remaining ship's velocity change to the weld's shear yield fraction.
+		if sheared_outer and not fuel_tank_contacted and fatal_reason.is_empty():
+			state.linear_velocity = _prev_linear_velocity.lerp(state.linear_velocity, strongest_shear_frac)
+			state.angular_velocity = lerpf(_prev_angular_velocity, state.angular_velocity, strongest_shear_frac)
+
+		# Whole-ship transmitted shock check on Transmitter (even if outer parts took the contact)
+		var body_dv_m_s := (state.linear_velocity - _prev_linear_velocity).length() / ppm
+		var whole_ship_g := (body_dv_m_s / pulse_s) / STANDARD_GRAVITY
+		_last_impact_g = maxf(_last_impact_g, whole_ship_g)
+		if fatal_reason.is_empty() and whole_ship_g > transmitter_shock_g_limit * tier_mult:
+			fatal_reason = "SIGNAL LOST"
+			fatal_g = whole_ship_g
+
+		if not fatal_reason.is_empty():
+			is_wrecked = true
+			controls_locked = true
+			call_deferred("_execute_fatal_wreck", fatal_reason, fatal_g, state.linear_velocity, state.angular_velocity)
+
+		_ccd_hold_frames = 0
+		_prev_linear_velocity = state.linear_velocity
+		_prev_angular_velocity = state.angular_velocity
+	else:
+		# Godot's CCD_MODE_CAST_RAY often pre-brakes linear_velocity 1 frame BEFORE
+		# reporting polygon contacts (contact_count == 0). If speed drops sharply without
+		# thruster explanation, preserve the true pre-CCD velocity for up to 2 ticks so
+		# the immediately following contact frame measures the real impact speed.
+		var max_expected_dv_px := (
+			((_current_applied_thrust_n + _current_rcs_linear_force) / maxf(mass, MIN_TOTAL_MASS))
+			* maxf(pixels_per_meter, 0.001)
+			* maxf(state.step, 0.001)
+		) + 24.0
+		var dv_px := (state.linear_velocity - _prev_linear_velocity).length()
+		var slowed_down := state.linear_velocity.length_squared() < _prev_linear_velocity.length_squared()
+		if _ccd_hold_frames == 0 and slowed_down and dv_px > max_expected_dv_px:
+			_ccd_hold_frames = 2
+		elif _ccd_hold_frames > 0:
+			_ccd_hold_frames -= 1
+			if _ccd_hold_frames == 0:
+				_prev_linear_velocity = state.linear_velocity
+				_prev_angular_velocity = state.angular_velocity
+		else:
+			_prev_linear_velocity = state.linear_velocity
+			_prev_angular_velocity = state.angular_velocity
+
+
+func _hide_visual_effects_recursive(node: Node) -> void:
+	if node == null:
+		return
+	for child in node.get_children():
+		if child.name == "ExhaustSprite" and child is CanvasItem:
+			(child as CanvasItem).visible = false
+		elif child is Node2D and child.get_node_or_null("Plume") != null:
+			(child as Node2D).visible = false
+		else:
+			_hide_visual_effects_recursive(child)
+
+
+func _execute_detach_module(info: Dictionary) -> void:
+	var part_node: Node2D = info["part_node"]
+	if not is_instance_valid(part_node) or _active_hull_node == null:
+		return
+	if not _active_hull_node.is_ancestor_of(part_node):
+		return
+
+	var entry := _find_modular_part_entry(part_node)
+	if entry.is_empty():
+		return
+
+	_hull_damaged = true
+	var role: int = entry["role"]
+	var mod_name: String = entry["name"]
+	var ppm := maxf(pixels_per_meter, 0.001)
+
+	# 1) Remove old collider from PlayerShip
+	var col_poly: Node2D = entry["collider"]
+	if is_instance_valid(col_poly):
+		_part_collider_map.erase(col_poly)
+		_active_collisions.erase(col_poly)
+		if col_poly.get_parent() == self:
+			remove_child(col_poly)
+		col_poly.queue_free()
+
+	# 2) Remove any RCS nozzles mounted on this module
+	for i in range(_rcs_nozzles.size() - 1, -1, -1):
+		var noz_node: Node2D = _rcs_nozzles[i]["node"]
+		if not is_instance_valid(noz_node) or part_node.is_ancestor_of(noz_node):
+			_rcs_nozzles.remove_at(i)
+
+	# 3) If MainEngine detached, shut off main thruster and exhaust reference
+	if role == ShipModuleScript.ModuleRole.MAIN_ENGINE:
+		_has_main_engine = false
+		if _exhaust_sprite != null and (not is_instance_valid(_exhaust_sprite) or part_node.is_ancestor_of(_exhaust_sprite)):
+			_exhaust_sprite = null
+
+	_modular_parts.erase(entry)
+
+	# 4) Spawn zero-G RigidBody2D debris with exact world transform, mass, inertia, and velocity
+	var part_world_xform := part_node.global_transform
+	var shape_poly := part_node.get_node_or_null("Shape") as Polygon2D
+	var push_normal: Vector2 = info["push_normal"]
+
+	var debris := RigidBody2D.new()
+	debris.name = "%sDebris" % mod_name
+	debris.gravity_scale = 0.0
+	debris.linear_damp = 0.0
+	debris.angular_damp = 0.0
+	debris.continuous_cd = RigidBody2D.CCD_MODE_CAST_RAY
+	debris.mass = maxf(float(info["mass"]), 0.5)
+	debris.inertia = maxf(float(info["inertia"]), 0.02) * ppm * ppm
+
+	# Compute CoM in the debris body's local coordinates (matching part_node's local frame)
+	var com_ship_px := (info["com_ship_m"] as Vector2) * ppm
+	var part_rel_ship := _get_transform_relative_to_ship(part_node)
+	var com_local_px := part_rel_ship.affine_inverse() * com_ship_px
+	debris.center_of_mass_mode = RigidBody2D.CENTER_OF_MASS_MODE_CUSTOM
+	debris.center_of_mass = com_local_px
+
+	debris.global_position = part_world_xform.origin + push_normal * 1.5
+	debris.global_rotation = part_world_xform.get_rotation()
+	debris.linear_velocity = info["v_debris_px"]
+	debris.angular_velocity = float(info["w_debris"])
+
+	# Reparent visual module onto the debris body and shut off plumes/exhaust
+	part_node.get_parent().remove_child(part_node)
+	part_node.owner = null
+	part_node.transform = Transform2D.IDENTITY
+	_hide_visual_effects_recursive(part_node)
+	debris.add_child(part_node)
+
+	if shape_poly != null and shape_poly.polygon.size() >= 3:
+		var debris_col := CollisionPolygon2D.new()
+		var pts := PackedVector2Array()
+		pts.resize(shape_poly.polygon.size())
+		var s_xform := shape_poly.transform
+		for idx in shape_poly.polygon.size():
+			pts[idx] = s_xform * shape_poly.polygon[idx]
+		debris_col.polygon = pts
+		debris.add_child(debris_col)
+
+	var parent_node := get_parent()
+	if parent_node != null:
+		parent_node.add_child(debris)
+		_spawned_debris.append(debris)
+		add_collision_exception_with(debris)
+		_debris_exception_timers.append({"body": debris, "time": 0.15})
+	else:
+		debris.queue_free()
+
+	# 5) Recompute live mass, CoM, inertia, and remaining thruster/RCS authority
+	_recalculate_mass_and_inertia()
+	_recalculate_propulsion()
+	if bool(info.get("emit_signal", true)):
+		module_detached.emit(mod_name, float(info["impact_g"]))
+
+
+func _execute_fatal_wreck(reason: String, impact_g: float, ship_vel_px: Vector2, ship_ang_vel: float) -> void:
+	_update_exhaust_visual(0.0, false)
+	var empty_throttles := PackedFloat32Array()
+	empty_throttles.resize(_rcs_nozzles.size())
+	_update_rcs_visuals(empty_throttles, 0.0)
+
+	# On core Hull Rupture, scatter every remaining attached module along its true rigid-body tangent
+	if reason == "HULL RUPTURE":
+		var ppm := maxf(pixels_per_meter, 0.001)
+		var ship_com_world := global_transform * center_of_mass
+		var remaining := _modular_parts.duplicate()
+		for entry in remaining:
+			var part_node: Node2D = entry["node"]
+			if not is_instance_valid(part_node):
+				continue
+			var props := _compute_module_mass_and_inertia(entry)
+			var part_com_world := global_transform * ((props["com_ship_m"] as Vector2) * ppm)
+			var r_px := part_com_world - ship_com_world
+			var v_part := ship_vel_px + Vector2(-ship_ang_vel * r_px.y, ship_ang_vel * r_px.x)
+			var out_dir := r_px.normalized() if r_px.length_squared() > 0.1 else Vector2.ZERO
+			_execute_detach_module({
+				"part_node": part_node,
+				"impact_g": impact_g,
+				"mass": props["mass"],
+				"inertia": props["inertia"],
+				"com_ship_m": props["com_ship_m"],
+				"v_debris_px": v_part + out_dir * (3.0 * ppm),
+				"w_debris": ship_ang_vel,
+				"push_normal": out_dir,
+				"emit_signal": false,
+			})
+
+	ship_wrecked.emit(reason, impact_g)
+
+
 func _physics_process(delta: float) -> void:
+	# Expire temporary spawn collision exceptions on detached debris so wreckage becomes solid
+	for i in range(_debris_exception_timers.size() - 1, -1, -1):
+		var item: Dictionary = _debris_exception_timers[i]
+		var t: float = float(item["time"]) - delta
+		var body: RigidBody2D = item["body"]
+		if t <= 0.0 or not is_instance_valid(body):
+			if is_instance_valid(body):
+				remove_collision_exception_with(body)
+			_debris_exception_timers.remove_at(i)
+		else:
+			item["time"] = t
 	if dev_hotkeys_enabled:
 		if InputMap.has_action("cycle_ship_size") and Input.is_action_just_pressed("cycle_ship_size"):
 			cycle_ship_size()
@@ -978,17 +1510,17 @@ func _physics_process(delta: float) -> void:
 				if abs_error < aim_deadband_rad:
 					if abs_vel < 0.08:
 						angular_velocity = 0.0
-					elif inertia > 0.0 and delta > 0.0:
-						var stop_torque: float = -angular_velocity * inertia / delta
+					elif _inertia_si > 0.0 and delta > 0.0:
+						var stop_torque: float = -angular_velocity * _inertia_si / delta
 						desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
-				elif inertia > 0.0 and delta > 0.0:
+				elif _inertia_si > 0.0 and delta > 0.0:
 					# Time-optimal phase-plane speed profile with PWM fractional final-tick pulse
 					# so RCS never overshoots past the target into a 2-frame limit cycle.
-					var alpha: float = _current_rcs_torque / inertia
+					var alpha: float = _current_rcs_torque / _inertia_si
 					var alpha_brake: float = alpha / maxf(brake_multiplier, 1.0)
 					var desired_speed: float = minf(sqrt(2.0 * alpha_brake * abs_error), abs_error / delta)
 					var desired_vel: float = signf(error) * desired_speed
-					var required_torque: float = (desired_vel - angular_velocity) * inertia / delta
+					var required_torque: float = (desired_vel - angular_velocity) * _inertia_si / delta
 					desired_rcs_torque = clampf(required_torque, -_current_rcs_torque, _current_rcs_torque)
 
 		# Rotational stabilize only when not aiming (draws from shared fuel_mass)
@@ -997,7 +1529,7 @@ func _physics_process(delta: float) -> void:
 				if abs(angular_velocity) > 0.001 and delta > 0.0:
 					# Fire full RCS torque when spinning fast, or a PWM fractional pulse on the
 					# final tick to land directly on 0.0 rad/s without overshooting.
-					var stop_torque: float = -angular_velocity * inertia / delta
+					var stop_torque: float = -angular_velocity * _inertia_si / delta
 					desired_rcs_torque = clampf(stop_torque, -_current_rcs_torque, _current_rcs_torque)
 				else:
 					angular_velocity = 0.0
@@ -1099,13 +1631,15 @@ func _physics_process(delta: float) -> void:
 					total_rcs_force_local_n += (nozzle["thrust_dir_local"] as Vector2) * f_n
 					total_rcs_torque_nm += float(nozzle["unit_torque_per_n"]) * f_n
 
+				var ppm_sq := pixels_per_meter * pixels_per_meter
 				if total_rcs_force_local_n.length_squared() > 0.0:
 					apply_central_force(total_rcs_force_local_n.rotated(rotation) * pixels_per_meter)
 				if absf(total_rcs_torque_nm) > 0.0:
-					apply_torque(total_rcs_torque_nm)
+					apply_torque(total_rcs_torque_nm * ppm_sq)
 			else:
+				var ppm_sq := pixels_per_meter * pixels_per_meter
 				if absf(desired_rcs_torque) > 0.0:
-					apply_torque(desired_rcs_torque * burn_fraction)
+					apply_torque(desired_rcs_torque * burn_fraction * ppm_sq)
 				if desired_rcs_linear_n > 0.0:
 					var lin_n := minf(desired_rcs_linear_n, _current_rcs_linear_force) * burn_fraction
 					apply_central_force(desired_rcs_linear_dir_world * lin_n * pixels_per_meter)
@@ -1271,7 +1805,7 @@ func _update_telemetry() -> void:
 	var fuel_pct := (fuel_mass / _initial_fuel_mass * 100.0) if _initial_fuel_mass > 0.0 else 0.0
 	var max_accel_m_s2 := _current_max_thrust_n / mass
 	var max_accel_g := max_accel_m_s2 / STANDARD_GRAVITY
-	var max_turn_accel := _current_rcs_torque / inertia if inertia > 0.0 else 0.0
+	var max_turn_accel := _current_rcs_torque / _inertia_si if _inertia_si > 0.0 else 0.0
 	var active_accel_m_s2 := _current_applied_thrust_n / mass
 	var active_accel_g := active_accel_m_s2 / STANDARD_GRAVITY
 	var speed_m_s := linear_velocity.length() / maxf(pixels_per_meter, 0.001)
@@ -1338,7 +1872,7 @@ func _update_telemetry() -> void:
 		heat_tag,
 		mass,
 		_dry_mass,
-		inertia,
+		_inertia_si,
 		max_turn_accel,
 		_rcs_nozzles.size(),
 		_current_rcs_nozzle_thrust_n / 1000.0,
