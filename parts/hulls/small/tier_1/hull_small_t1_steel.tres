@@ -1,11 +1,11 @@
 [gd_resource type="Resource" script_class="HullPart" format=3 uid="uid://se3y70bskfuv"]
 
+[ext_resource type="PackedScene" uid="uid://b3jl7ngckls1j" path="res://ship_xframe_small.tscn" id="1_e72n5"]
 [ext_resource type="Script" uid="uid://bf6npxdu2t8rh" path="res://parts/hull_part.gd" id="1_script"]
-[ext_resource type="PackedScene" uid="uid://b3jl7ngckls1j" path="res://ship_attempt.tscn" id="2_scene"]
 
 [resource]
 script = ExtResource("1_script")
-hull_scene = ExtResource("2_scene")
+hull_scene = ExtResource("1_e72n5")
 fuel_capacity_kg = 100.0
 inertia_radius_m = 0.9
 rcs_lever_arm_m = 1.0

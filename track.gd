@@ -52,16 +52,18 @@ const TRACK_TYPE_COUNT: int = 4
 @export var checkpoint_trigger_depth: float = 110.0
 
 @export_group("Orbital Holo-Corridor Visuals")
-## Translucent cyan-blue surface color right along the track edges.
-@export var surface_edge_color: Color = Color(0.06, 0.56, 0.98, 0.28)
-## Mid-band translucent blue color transitioning toward the center.
-@export var surface_mid_color: Color = Color(0.04, 0.36, 0.78, 0.13)
-## Ultra-sheer center tint so the Milky Way and 3D asteroids shine cleanly through.
+## Translucent electric-blue surface color along the track edges at the midpoint peak (Peak Blue = Flip & Burn!).
+@export var surface_edge_color: Color = Color(0.06, 0.58, 1.0, 0.36)
+## Mid-band translucent blue color (stays calm translucent blue across the track interior).
+@export var surface_mid_color: Color = Color(0.04, 0.36, 0.78, 0.14)
+## Ultra-sheer blue center tint so the Milky Way and 3D background shine cleanly through.
 @export var surface_center_color: Color = Color(0.02, 0.22, 0.52, 0.06)
-## Warm amber-orange edge tint blended onto the outside wall of sharp hairpins.
-@export var hairpin_warn_edge_color: Color = Color(1.0, 0.52, 0.10, 0.36)
-## Bend radius (px) below which the outer corner wall shifts into amber warning kerbs.
-@export var corner_warn_radius_px: float = 780.0
+## Bright golden-amber edge color for slow turns (100% Amber along the course edges).
+@export var hairpin_warn_edge_color: Color = Color(1.0, 0.72, 0.24, 0.44)
+## Bend radius (px) below which a turn is marked as a full 100% Amber slow corner.
+@export var corner_warn_radius_px: float = 950.0
+## Reference acceleration (px/s^2) used to find the flip-and-burn midpoint peak (~3.0 G).
+@export var pacing_ref_accel_px: float = 480.0
 ## Spacing between centerline holographic forward chevrons (px).
 @export var chevron_spacing_px: float = 300.0
 ## Spacing between physical projector buoys along both walls (px).
@@ -74,6 +76,7 @@ var centerline_points: PackedVector2Array = PackedVector2Array()
 var camera_rail_points: PackedVector2Array = PackedVector2Array()
 var outer_points: PackedVector2Array = PackedVector2Array()
 var inner_points: PackedVector2Array = PackedVector2Array()
+var pacing_brake: PackedFloat32Array = PackedFloat32Array()
 var track_length_px: float = 0.0
 var total_track_turn_rad: float = 0.0
 var _centerline_cum_dist: PackedFloat32Array = PackedFloat32Array()
@@ -1215,12 +1218,298 @@ func _make_glow_line(node_name: String, z_idx: int, mat: Material) -> Line2D:
 	return ln
 
 
+func _smoothstep_range(edge0: float, edge1: float, x: float) -> float:
+	if absf(edge1 - edge0) < 1e-6:
+		return 1.0 if x >= edge1 else 0.0
+	var t := clampf((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+	return t * t * (3.0 - 2.0 * t)
+
+
+# Luminous Blue (0.0) <-> Light Amber (1.0) color ramp routed through a soft warm-ice
+# midpoint so complementary Blue and Amber stay bright and clean instead of muddy gray.
+func _eval_pacing_color(blue_col: Color, orange_col: Color, orange_t: float) -> Color:
+	var t := clampf(orange_t, 0.0, 1.0)
+	var mid_alpha := lerpf(blue_col.a, orange_col.a, 0.5)
+	var mid_col := Color(0.84, 0.94, 0.78, mid_alpha)
+	if t < 0.5:
+		return blue_col.lerp(mid_col, t * 2.0)
+	return mid_col.lerp(orange_col, (t - 0.5) * 2.0)
+
+
+# Statically bakes the 2-color Blue <-> Orange pacing gradient around the closed loop:
+#   - 1.0 (Full Orange): Inside slow turns where the ship must be moving slowly.
+#   - 1.0 -> 0.0 fade:   Coming out of a turn, orange fades smoothly toward blue,
+#                        reaching 0.0 (Peak Blue) ONLY at the exact flip-and-burn midpoint
+#                        where the forward acceleration pass meets the backward braking pass.
+#   - 0.0 -> 1.0 fade:   Past the midpoint, blue fades smoothly back into full Orange
+#                        entering the next turn.
+# Short straights flash quickly Orange -> Peak Blue -> Orange; long straights fade
+# gradually so the player reads straight length and flip timing right off the track.
+func _compute_pacing_zones() -> void:
+	var n := centerline_points.size()
+	pacing_brake = PackedFloat32Array()
+	if n < 3:
+		return
+
+	pacing_brake.resize(n)
+
+	# 1. Smoothed local curvature kappa = 1 / R along the closed loop
+	var kappa := PackedFloat32Array()
+	kappa.resize(n)
+	for i in n:
+		var r := _estimate_bend_radius(
+			centerline_points[(i - 1 + n) % n],
+			centerline_points[i],
+			centerline_points[(i + 1) % n]
+		)
+		kappa[i] = 1.0 / maxf(r, 80.0)
+
+	for _pass in range(4):
+		var next_k := PackedFloat32Array()
+		next_k.resize(n)
+		for i in n:
+			next_k[i] = kappa[(i - 1 + n) % n] * 0.25 + kappa[i] * 0.5 + kappa[(i + 1) % n] * 0.25
+		kappa = next_k
+
+	# 2. Forward acceleration pass & backward braking pass -> exact v_opt speed profile
+	var a_accel := maxf(pacing_ref_accel_px, 100.0)
+	var a_lat := a_accel * 0.72
+	var a_brake := a_accel * 0.85
+	var v_cap := 2400.0
+
+	var v_corner := PackedFloat32Array()
+	v_corner.resize(n)
+	var min_radius := INF
+	for i in n:
+		var r_s := 1.0 / maxf(kappa[i], 1e-6)
+		min_radius = minf(min_radius, r_s)
+		v_corner[i] = minf(sqrt(a_lat * r_s), v_cap)
+
+	var seg_len := PackedFloat32Array()
+	seg_len.resize(n)
+	for i in n:
+		seg_len[i] = centerline_points[i].distance_to(centerline_points[(i + 1) % n])
+
+	var v_accel := v_corner.duplicate()
+	for step in range(n * 2):
+		var i := step % n
+		var ni := (i + 1) % n
+		var v_next := sqrt(v_accel[i] * v_accel[i] + 2.0 * a_accel * seg_len[i])
+		if v_next < v_accel[ni]:
+			v_accel[ni] = v_next
+
+	var v_brake := v_corner.duplicate()
+	for step in range(n * 2):
+		var ni := (n * 2 - 1 - step) % n
+		var i := (ni - 1 + n) % n
+		var v_prev := sqrt(v_brake[ni] * v_brake[ni] + 2.0 * a_brake * seg_len[i])
+		if v_prev < v_brake[i]:
+			v_brake[i] = v_prev
+
+	var v_opt := PackedFloat32Array()
+	v_opt.resize(n)
+	for i in n:
+		v_opt[i] = minf(v_accel[i], v_brake[i])
+
+	# 3. Identify slow turn zones (full Orange) around the closed loop.
+	# If a Speedway has no tight corners below corner_warn_radius_px, adapt threshold
+	# gently to its tightest bends so even Speedways show clean corner-to-midpoint pacing.
+	var turn_r := maxf(corner_warn_radius_px, track_width * 1.4)
+	var is_turn := PackedByteArray()
+	is_turn.resize(n)
+	var turn_count := 0
+	for i in n:
+		var r_s := 1.0 / maxf(kappa[i], 1e-6)
+		if r_s < turn_r:
+			is_turn[i] = 1
+			turn_count += 1
+		else:
+			is_turn[i] = 0
+
+	var turn_orange_level := 1.0
+	if turn_count == 0:
+		var adaptive_r := clampf(min_radius * 1.35, turn_r, 1850.0)
+		turn_orange_level = clampf(_smoothstep_range(2100.0, 950.0, min_radius), 0.55, 1.0)
+		for i in n:
+			var r_s := 1.0 / maxf(kappa[i], 1e-6)
+			if r_s < adaptive_r:
+				is_turn[i] = 1
+				turn_count += 1
+
+	# Edge case: completely circular / all-turn loop -> map directly from global v_opt range
+	if turn_count == 0 or turn_count == n:
+		var v_lo := INF
+		var v_hi := 0.0
+		for i in n:
+			v_lo = minf(v_lo, v_opt[i])
+			v_hi = maxf(v_hi, v_opt[i])
+		var v_span := maxf(v_hi - v_lo, 1.0)
+		for i in n:
+			pacing_brake[i] = clampf(1.0 - (v_opt[i] - v_lo) / v_span, 0.0, 1.0) * turn_orange_level
+		return
+
+	# 4. Merge tiny gaps (< 180 px) between adjacent turns (e.g. tight S-bends) so they stay Orange
+	var first_turn := -1
+	for i in n:
+		if is_turn[i] == 1:
+			first_turn = i
+			break
+
+	var cur_idx := first_turn
+	var visited := 0
+	while visited < n:
+		if is_turn[cur_idx] == 1:
+			cur_idx = (cur_idx + 1) % n
+			visited += 1
+			continue
+		var gap_start := cur_idx
+		var gap_dist := 0.0
+		var gap_len := 0
+		while visited < n and is_turn[cur_idx] == 0:
+			gap_dist += seg_len[cur_idx]
+			cur_idx = (cur_idx + 1) % n
+			gap_len += 1
+			visited += 1
+		if gap_dist < 180.0:
+			for k in gap_len:
+				is_turn[(gap_start + k) % n] = 1
+
+	# 5. Fill pacing_brake: 1.0 inside turns, and for every inter-turn span [start..end],
+	# fade Orange (1.0) -> Peak Blue (0.0) at the v_opt midpoint -> Orange (1.0) at the next turn!
+	for i in n:
+		pacing_brake[i] = turn_orange_level if is_turn[i] == 1 else 0.0
+
+	first_turn = -1
+	for i in n:
+		if is_turn[i] == 1:
+			first_turn = i
+			break
+	if first_turn == -1:
+		return
+
+	cur_idx = first_turn
+	visited = 0
+	while visited < n:
+		if is_turn[cur_idx] == 1:
+			cur_idx = (cur_idx + 1) % n
+			visited += 1
+			continue
+
+		# Collect contiguous non-turn span (straight / connecting section between two turns)
+		var span_indices: PackedInt32Array = PackedInt32Array()
+		var span_cum_d: PackedFloat32Array = PackedFloat32Array()
+		var d_acc := 0.0
+		while visited < n and is_turn[cur_idx] == 0:
+			span_indices.append(cur_idx)
+			span_cum_d.append(d_acc)
+			d_acc += seg_len[cur_idx]
+			cur_idx = (cur_idx + 1) % n
+			visited += 1
+
+		var m := span_indices.size()
+		if m == 0:
+			continue
+
+		# Find exact physics flip-and-burn midpoint peak (max v_opt inside this span)
+		var peak_k := 0
+		var peak_v := -1.0
+		for k in m:
+			var v_here := v_opt[span_indices[k]]
+			if v_here > peak_v:
+				peak_v = v_here
+				peak_k = k
+
+		# Guard against peak sitting right on an endpoint vertex on very short spans
+		if m >= 3:
+			peak_k = clampi(peak_k, 1, m - 2)
+
+		var d_exit := maxf(span_cum_d[peak_k] + seg_len[(span_indices[0] - 1 + n) % n], 1.0)
+		var d_total := maxf(d_acc + seg_len[(span_indices[0] - 1 + n) % n], 1.0)
+		var d_peak := span_cum_d[peak_k] + seg_len[(span_indices[0] - 1 + n) % n]
+		var d_rem := maxf(d_total - d_peak, 1.0)
+		var lead_seg := seg_len[(span_indices[0] - 1 + n) % n]
+
+		for k in m:
+			var vi := span_indices[k]
+			var d_from_turn := lead_seg + span_cum_d[k]
+			if k <= peak_k:
+				# First half: Turn (Orange 1.0) -> Midpoint Peak (Pure Blue 0.0)
+				var u := clampf(d_from_turn / d_exit, 0.0, 1.0)
+				pacing_brake[vi] = (1.0 - u) * turn_orange_level
+			else:
+				# Second half: Midpoint Peak (Pure Blue 0.0) -> Next Turn (Orange 1.0)
+				var u := clampf((d_from_turn - d_peak) / d_rem, 0.0, 1.0)
+				pacing_brake[vi] = u * turn_orange_level
+
+	# 6. Light 1-pass smoothing so turn boundaries feel organic while keeping peak Blue razor-clear
+	var smoothed := PackedFloat32Array()
+	smoothed.resize(n)
+	for i in n:
+		var pi := (i - 1 + n) % n
+		var ni := (i + 1) % n
+		smoothed[i] = pacing_brake[pi] * 0.2 + pacing_brake[i] * 0.6 + pacing_brake[ni] * 0.2
+	pacing_brake = smoothed
+
+
+func _build_wall_gradient(
+	wall_pts: PackedVector2Array,
+	accel_col: Color,
+	brake_col: Color,
+	warn_vals: PackedFloat32Array,
+	warn_boost_col: Color
+) -> Gradient:
+	var n := wall_pts.size()
+	if n < 3 or pacing_brake.size() != n:
+		return null
+
+	var cum := PackedFloat32Array()
+	cum.resize(n + 1)
+	cum[0] = 0.0
+	for i in n:
+		cum[i + 1] = cum[i] + wall_pts[i].distance_to(wall_pts[(i + 1) % n])
+	var total_len := maxf(cum[n], 1.0)
+
+	var stop_count := mini(n, 160)
+	var offsets := PackedFloat32Array()
+	var colors := PackedColorArray()
+	offsets.resize(stop_count + 1)
+	colors.resize(stop_count + 1)
+
+	var v_idx := 0
+	for s in range(stop_count):
+		var frac := float(s) / float(stop_count)
+		var target_d := frac * total_len
+		while v_idx + 1 < n and cum[v_idx + 1] < target_d:
+			v_idx += 1
+		var ni := (v_idx + 1) % n
+		var seg_d := maxf(cum[v_idx + 1] - cum[v_idx], 0.0001)
+		var t := clampf((target_d - cum[v_idx]) / seg_d, 0.0, 1.0)
+		var bw := lerpf(pacing_brake[v_idx], pacing_brake[ni], t)
+		var col := _eval_pacing_color(accel_col, brake_col, bw)
+		if warn_vals.size() == n:
+			var ww := lerpf(warn_vals[v_idx], warn_vals[ni], t)
+			col = col.lerp(warn_boost_col, ww * 0.5)
+		offsets[s] = frac
+		colors[s] = col
+
+	offsets[stop_count] = 1.0
+	colors[stop_count] = colors[0]
+
+	var grad := Gradient.new()
+	grad.offsets = offsets
+	grad.colors = colors
+	return grad
+
+
 func _apply_visuals() -> void:
 	_ensure_holo_visual_nodes()
 
 	var n := centerline_points.size()
 	if n < 3 or outer_points.size() != n or inner_points.size() != n:
 		return
+
+	# 0. Compute 2-pass static Newtonian pacing ribbon (Cyan-Blue <-> Amber)
+	_compute_pacing_zones()
 
 	# 1. Compute per-vertex outside-corner warning intensities (0..1) for sharp hairpins
 	var outer_warn := PackedFloat32Array()
@@ -1265,26 +1554,43 @@ func _apply_visuals() -> void:
 		outer_warn = next_ow
 		inner_warn = next_iw
 
-	# 2. Build edge-faded translucent cyan-blue ArrayMesh (with subtle amber tint on hairpin outer edges)
+	# 2. Build 2-color edge-faded translucent pacing ArrayMesh
 	_rebuild_surface_mesh(outer_warn, inner_warn)
 
-	# 3. Layered glowing energy barrier walls (outer bloom + inner glow + crisp ice-blue core)
-	var bloom_col := Color(0.06, 0.45, 0.98, 0.22)
-	var glow_col := Color(0.18, 0.78, 1.0, 0.52)
-	var core_col := Color(0.84, 0.97, 1.0, 0.96)
+	# 3. Layered glowing energy barrier walls tinted along the Blue <-> Light Amber pacing gradient
+	var bloom_accel := Color(0.06, 0.45, 0.98, 0.22)
+	var bloom_brake := Color(1.0, 0.72, 0.22, 0.28)
 
-	for pair in [
-		[_outer_bloom, outer_points, 28.0, bloom_col],
-		[_inner_bloom, inner_points, 28.0, bloom_col],
-		[_outer_glow, outer_points, 11.0, glow_col],
-		[_inner_glow, inner_points, 11.0, glow_col],
+	var glow_accel := Color(0.18, 0.78, 1.0, 0.52)
+	var glow_brake := Color(1.0, 0.80, 0.34, 0.64)
+
+	var core_accel := Color(0.84, 0.97, 1.0, 0.96)
+	var core_brake := Color(1.0, 0.94, 0.70, 0.98)
+
+	var warn_bloom := Color(1.0, 0.74, 0.26, 0.34)
+	var warn_glow := Color(1.0, 0.84, 0.40, 0.72)
+	var warn_core := Color(1.0, 0.95, 0.74, 1.0)
+
+	var outer_bloom_grad := _build_wall_gradient(outer_points, bloom_accel, bloom_brake, outer_warn, warn_bloom)
+	var inner_bloom_grad := _build_wall_gradient(inner_points, bloom_accel, bloom_brake, inner_warn, warn_bloom)
+	var outer_glow_grad := _build_wall_gradient(outer_points, glow_accel, glow_brake, outer_warn, warn_glow)
+	var inner_glow_grad := _build_wall_gradient(inner_points, glow_accel, glow_brake, inner_warn, warn_glow)
+	var outer_core_grad := _build_wall_gradient(outer_points, core_accel, core_brake, outer_warn, warn_core)
+	var inner_core_grad := _build_wall_gradient(inner_points, core_accel, core_brake, inner_warn, warn_core)
+
+	for spec in [
+		[_outer_bloom, outer_points, 28.0, outer_bloom_grad, bloom_accel],
+		[_inner_bloom, inner_points, 28.0, inner_bloom_grad, bloom_accel],
+		[_outer_glow, outer_points, 11.0, outer_glow_grad, glow_accel],
+		[_inner_glow, inner_points, 11.0, inner_glow_grad, glow_accel],
 	]:
-		var ln: Line2D = pair[0]
+		var ln: Line2D = spec[0]
 		if ln != null:
 			ln.closed = true
-			ln.width = float(pair[2])
-			ln.default_color = pair[3]
-			ln.points = pair[1]
+			ln.width = float(spec[2])
+			ln.gradient = spec[3]
+			ln.default_color = Color.WHITE if spec[3] != null else spec[4]
+			ln.points = spec[1]
 
 	if _outer_line != null:
 		_outer_line.closed = true
@@ -1292,7 +1598,8 @@ func _apply_visuals() -> void:
 		_outer_line.antialiased = true
 		_outer_line.z_index = -9
 		_outer_line.width = wall_line_width
-		_outer_line.default_color = core_col
+		_outer_line.gradient = outer_core_grad
+		_outer_line.default_color = Color.WHITE if outer_core_grad != null else core_accel
 		_outer_line.points = outer_points
 	if _inner_line != null:
 		_inner_line.closed = true
@@ -1300,7 +1607,8 @@ func _apply_visuals() -> void:
 		_inner_line.antialiased = true
 		_inner_line.z_index = -9
 		_inner_line.width = wall_line_width
-		_inner_line.default_color = core_col
+		_inner_line.gradient = inner_core_grad
+		_inner_line.default_color = Color.WHITE if inner_core_grad != null else core_accel
 		_inner_line.points = inner_points
 
 	# 4. Populate forward chevrons, hairpin warning kerbs, projector buoys, and Start/Finish gate
@@ -1412,6 +1720,7 @@ func _rebuild_surface_mesh(outer_warn: PackedFloat32Array, inner_warn: PackedFlo
 	verts.resize(n * strip_count * 6)
 	colors.resize(n * strip_count * 6)
 
+	var has_pacing := pacing_brake.size() == n
 	var idx := 0
 	for i in n:
 		var ni := (i + 1) % n
@@ -1420,10 +1729,18 @@ func _rebuild_surface_mesh(outer_warn: PackedFloat32Array, inner_warn: PackedFlo
 		var o1 := outer_points[ni]
 		var i1 := inner_points[ni]
 
-		var col0_o := surface_edge_color.lerp(hairpin_warn_edge_color, outer_warn[i])
-		var col0_i := surface_edge_color.lerp(hairpin_warn_edge_color, inner_warn[i])
-		var col1_o := surface_edge_color.lerp(hairpin_warn_edge_color, outer_warn[ni])
-		var col1_i := surface_edge_color.lerp(hairpin_warn_edge_color, inner_warn[ni])
+		var b0 := clampf(pacing_brake[i], 0.0, 1.0) if has_pacing else 0.0
+		var b1 := clampf(pacing_brake[ni], 0.0, 1.0) if has_pacing else 0.0
+
+		# Keep the track center calm translucent blue; only the outer & inner edges
+		# transition Blue <-> Light Amber to telegraph turns and midpoint flip points.
+		var edge0 := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, b0)
+		var edge1 := _eval_pacing_color(surface_edge_color, hairpin_warn_edge_color, b1)
+
+		var col0_o := edge0.lerp(hairpin_warn_edge_color, outer_warn[i] * 0.55)
+		var col0_i := edge0.lerp(hairpin_warn_edge_color, inner_warn[i] * 0.55)
+		var col1_o := edge1.lerp(hairpin_warn_edge_color, outer_warn[ni] * 0.55)
+		var col1_i := edge1.lerp(hairpin_warn_edge_color, inner_warn[ni] * 0.55)
 
 		var row0_c: Array[Color] = [col0_o, surface_mid_color, surface_center_color, surface_mid_color, col0_i]
 		var row1_c: Array[Color] = [col1_o, surface_mid_color, surface_center_color, surface_mid_color, col1_i]
@@ -1462,8 +1779,10 @@ func _rebuild_surface_mesh(outer_warn: PackedFloat32Array, inner_warn: PackedFlo
 
 func _build_holo_chevrons() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	if track_length_px <= 1.0 or chevron_spacing_px <= 10.0:
+	var n := centerline_points.size()
+	if n < 3 or track_length_px <= 1.0 or chevron_spacing_px <= 10.0:
 		return result
+	var has_pacing := pacing_brake.size() == n
 	var count := maxi(int(floor(track_length_px / chevron_spacing_px)), 4)
 	var step := track_length_px / float(count)
 	for k in range(count):
@@ -1475,7 +1794,14 @@ func _build_holo_chevrons() -> Array[Dictionary]:
 		var p1 := _sample_loop_at_arc(centerline_points, arc + 12.0)
 		var dir := (p1 - p0).normalized()
 		if dir.length_squared() > 0.5:
-			result.append({"pos": p0, "dir": dir})
+			var bw := 0.0
+			if has_pacing:
+				var seg := _locate_arc_segment(arc)
+				var lo: int = seg["lo"]
+				var hi: int = (lo + 1) % n
+				var t: float = seg["t"]
+				bw = lerpf(pacing_brake[lo], pacing_brake[hi], t)
+			result.append({"pos": p0, "dir": dir, "brake": bw})
 	return result
 
 
@@ -1484,6 +1810,7 @@ func _build_projector_buoys(outer_warn: PackedFloat32Array, inner_warn: PackedFl
 	var n := centerline_points.size()
 	if n < 3 or track_length_px <= 1.0 or buoy_spacing_px <= 20.0:
 		return result
+	var has_pacing := pacing_brake.size() == n
 	var count := maxi(int(floor(track_length_px / buoy_spacing_px)), 6)
 	var step := track_length_px / float(count)
 	var perch_offset := 15.0
@@ -1503,8 +1830,9 @@ func _build_projector_buoys(outer_warn: PackedFloat32Array, inner_warn: PackedFl
 		var o_tan := (outer_points[hi] - outer_points[lo]).normalized()
 		var i_tan := (inner_points[hi] - inner_points[lo]).normalized()
 		var to_center_from_outer := (i_pos - o_pos).normalized()
-		var o_w := lerpf(outer_warn[lo], outer_warn[hi], t)
-		var i_w := lerpf(inner_warn[lo], inner_warn[hi], t)
+		var bw := lerpf(pacing_brake[lo], pacing_brake[hi], t) if has_pacing else 0.0
+		var o_w := maxf(lerpf(outer_warn[lo], outer_warn[hi], t), bw)
+		var i_w := maxf(lerpf(inner_warn[lo], inner_warn[hi], t), bw)
 
 		result.append({
 			"pos": o_pos - to_center_from_outer * perch_offset,

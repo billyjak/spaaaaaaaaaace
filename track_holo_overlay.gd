@@ -22,7 +22,7 @@ var active_checkpoint_index: int = 0
 
 var chevron_color: Color = Color(0.38, 0.88, 1.0, 0.22)
 var cyan_emitter_color: Color = Color(0.32, 0.90, 1.0, 0.95)
-var amber_emitter_color: Color = Color(1.0, 0.62, 0.14, 0.98)
+var amber_emitter_color: Color = Color(1.0, 0.80, 0.32, 0.98)
 var buoy_body_color: Color = Color(0.11, 0.15, 0.22, 0.95)
 var buoy_trim_color: Color = Color(0.45, 0.62, 0.78, 0.85)
 
@@ -59,7 +59,7 @@ func _draw() -> void:
 	if n < 3 or outer_points.size() != n or inner_points.size() != n:
 		return
 
-	# 1. Subtle holographic forward-flow chevrons along the centerline
+	# 1. Subtle holographic forward-flow chevrons along the calm blue centerline
 	for ch in chevrons:
 		var pos: Vector2 = ch["pos"]
 		var fwd: Vector2 = ch["dir"]
@@ -130,9 +130,9 @@ func _draw_warning_kerbs(wall_pts: PackedVector2Array, warn_vals: PackedFloat32A
 			continue
 		var a := wall_pts[i]
 		var b := wall_pts[next_i]
-		# Soft amber halo + bright inner amber-gold core
-		draw_line(a, b, Color(1.0, 0.48, 0.08, 0.32 * w), 14.0, true)
-		draw_line(a, b, Color(1.0, 0.76, 0.28, 0.88 * w), 4.2, true)
+		# Soft light-amber halo + bright inner golden core
+		draw_line(a, b, Color(1.0, 0.70, 0.22, 0.30 * w), 14.0, true)
+		draw_line(a, b, Color(1.0, 0.88, 0.48, 0.88 * w), 4.2, true)
 
 
 func _draw_start_finish_gate() -> void:
@@ -193,8 +193,16 @@ func _draw_start_finish_gate() -> void:
 		draw_circle(end_pt, 3.5, Color(0.70, 1.0, 0.90, 1.0))
 
 
+func _eval_luminous_ramp(blue_col: Color, orange_col: Color, t_orange: float) -> Color:
+	var t := clampf(t_orange, 0.0, 1.0)
+	var mid_col := Color(0.84, 0.94, 0.78, lerpf(blue_col.a, orange_col.a, 0.5))
+	if t < 0.5:
+		return blue_col.lerp(mid_col, t * 2.0)
+	return mid_col.lerp(orange_col, (t - 0.5) * 2.0)
+
+
 func _draw_projector_buoy(pos: Vector2, tangent: Vector2, inward: Vector2, warn: float) -> void:
-	var emitter_col := cyan_emitter_color.lerp(amber_emitter_color, clampf(warn, 0.0, 1.0))
+	var emitter_col := _eval_luminous_ramp(cyan_emitter_color, amber_emitter_color, warn)
 
 	# Tiny projector beam glow linking the buoy emitter inward to the energy rail
 	var beam_start := pos + inward * 4.0
